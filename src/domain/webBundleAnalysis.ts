@@ -10,6 +10,7 @@ import {
 } from "./browserDeadline.js";
 import { emptyArraySchema } from "./emptyArraySchema.js";
 import {
+  browserOriginSchema,
   inspectWebPageWithSourceInputSchema,
   recordedBrowserOriginSchema,
 } from "./browserObservation.js";
@@ -39,6 +40,12 @@ const webBundleTotalTimeoutDescription = `Total analysis deadline phase: maximum
 export const analyzeWebBundleInputSchema = inspectWebPageWithSourceInputSchema
   .safeExtend({
     fetch_source_maps: z.boolean().default(false),
+    allow_private_origins: z
+      .array(browserOriginSchema)
+      .default([])
+      .describe(
+        "Optional exact origins whose source maps may be fetched although their addresses are not public, such as a local dev server. Defaults to none: a source-map URL or redirect hop on a private, loopback, link-local, unique-local, IPv4-mapped or other non-public address, or a name resolving to one, is policy_filtered.",
+      ),
     max_heap_mb: z
       .number()
       .int()

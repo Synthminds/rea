@@ -27,6 +27,12 @@ export const browserScenarioCaptureSchema = z
       network_content: browserNetworkContentSelectionValuesSchema,
       event_families: z.array(browserScenarioEventFamilySchema),
       limits: browserScenarioCaptureLimitsValuesSchema,
+      allow_private_origins: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          "Exact non-public origins the caller allowed; omitted when only public addresses were reachable.",
+        ),
     }),
     duration_ms: z.int().min(0),
     steps: z.array(browserScenarioStepSchema).min(1),

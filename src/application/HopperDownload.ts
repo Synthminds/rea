@@ -21,6 +21,11 @@ export const downloadHopperPackage = async (
     maxBytes > HOPPER_DOWNLOAD_BYTES
   )
     throw new RangeError("Invalid Hopper response byte budget");
+  // Exempt from the private-network policy (src/domain/networkDestination.ts):
+  // callers pass only the vendor's fixed URLs or feed filenames validated to
+  // the https://www.hopperapp.com origin, TLS authenticates that host, and the
+  // package is signature- and hash-verified before use. No caller or page
+  // input selects this destination.
   const response = await fetch(url, {
     headers: { accept: "application/json", "user-agent": "rea-installer" },
     signal:

@@ -89,6 +89,9 @@ export const browserScenarioCaptureData = (input: {
       network_content: input.scenario.capture.network,
       event_families: [...new Set(input.scenario.capture.events)].sort(),
       limits: input.scenario.capture.limits,
+      ...(input.scenario.allow_private_origins.length === 0
+        ? {}
+        : { allow_private_origins: input.scenario.allow_private_origins }),
     },
     duration_ms: Math.max(0, Math.round(performance.now() - input.startedAt)),
     steps: [...input.steps],

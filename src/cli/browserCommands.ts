@@ -169,6 +169,12 @@ const registerBundleAnalysis = (
         .boolean()
         .default(false)
         .describe("Fetch source maps referenced by captured scripts"),
+      allowPrivateOrigins: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          "Exact origins on non-public addresses, such as a local dev server, whose source maps may be fetched",
+        ),
       maxHeapMb: analyzeWebBundleInputSchema.shape.max_heap_mb,
       analysisTimeoutMs: analyzeWebBundleInputSchema.shape.analysis_timeout_ms,
       totalAnalysisTimeoutMs:
@@ -192,6 +198,9 @@ const registerBundleAnalysis = (
             observation_ms: options.observationMs,
             include_script_sources: true,
             fetch_source_maps: options.fetchSourceMaps,
+            ...(options.allowPrivateOrigins === undefined
+              ? {}
+              : { allow_private_origins: options.allowPrivateOrigins }),
             ...(options.maxHeapMb === undefined
               ? {}
               : { max_heap_mb: options.maxHeapMb }),

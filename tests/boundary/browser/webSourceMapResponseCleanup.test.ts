@@ -52,6 +52,7 @@ describe("source-map discarded HTTP response ownership", () => {
         const input = analyzeWebBundleInputSchema.parse({
           cdp_endpoint: "http://127.0.0.1:9222",
           allowed_origins: [origin],
+          allow_private_origins: [origin],
           target_id: "page-1",
           fetch_source_maps: true,
         });
