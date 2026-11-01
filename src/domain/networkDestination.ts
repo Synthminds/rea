@@ -1,3 +1,6 @@
+import { z } from "zod";
+
+import { browserOriginSchema } from "./browserObservation.js";
 import { err, ok, type Result } from "./result.js";
 
 /**
@@ -32,6 +35,15 @@ export interface AddressVerdict {
   readonly family: 4 | 6;
   /** Undefined when the address is a public internet address. */
   readonly nonPublic: NonPublicAddressClass | undefined;
+  /**
+   * Link-local (169.254.0.0/16, fe80::/10), a cloud metadata address
+   * (169.254.169.254, 100.100.100.200, fd00:ec2::254), or an IPv4-mapped,
+   * IPv4-compatible or NAT64 form of such an IPv4 address: refused even for
+   * an allowed origin.
+   */
+  readonly alwaysRefused: boolean;
+  /** The class as a noun phrase, such as "a loopback address". */
+  readonly kind: string;
   /** A sentence fragment naming the address and its class. */
   readonly description: string;
 }
@@ -48,7 +60,13 @@ export interface DestinationRefusal {
     | NonPublicAddressClass
     | "localhost-name"
     | "unresolved";
+  /**
+   * Why, without repeating a host name: a page or caller chose that text, so
+   * `destinationLabel` quotes it separately.
+   */
   readonly reason: string;
+  /** Link-local or cloud metadata: no `allow_private_origins` entry reaches it. */
+  readonly alwaysRefused?: true;
 }
 
 /** A destination REA may reach, with the only addresses it may connect to. */
@@ -76,6 +94,8 @@ export interface DestinationPolicy {
   readonly resolve: DestinationResolver;
 }
 
+const CLOUD_METADATA = "cloud instance metadata";
+
 const RANGES_V4: readonly (readonly [
   number,
   number,
@@ -84,9 +104,10 @@ const RANGES_V4: readonly (readonly [
 ])[] = [
   [0x00000000, 8, "unspecified", "this-network"],
   [0x0a000000, 8, "private"],
+  [0x646464c8, 32, "shared", CLOUD_METADATA],
   [0x64400000, 10, "shared", "carrier-grade NAT"],
   [0x7f000000, 8, "loopback"],
-  [0xa9fea9fe, 32, "link-local", "cloud instance metadata"],
+  [0xa9fea9fe, 32, "link-local", CLOUD_METADATA],
   [0xa9fe0000, 16, "link-local"],
   [0xac100000, 12, "private"],
   [0xc0000000, 24, "protocol-assignment"],
@@ -121,12 +142,29 @@ const ARTICLES: Readonly<Record<NonPublicAddressClass, string>> = {
   tunnel: "a tunnel-relay",
 };
 
-const describe = (
+const kindOf = (addressClass: NonPublicAddressClass, detail?: string): string =>
+  `${ARTICLES[addressClass]} address${detail === undefined ? "" : ` (${detail})`}`;
+
+const verdictOf = (
   address: string,
-  addressClass: NonPublicAddressClass,
+  family: 4 | 6,
+  addressClass: NonPublicAddressClass | undefined,
   detail?: string,
-): string =>
-  `${address} is ${ARTICLES[addressClass]} address${detail === undefined ? "" : ` (${detail})`}`;
+  alwaysRefused = false,
+): AddressVerdict => {
+  const kind =
+    addressClass === undefined
+      ? "a public address"
+      : kindOf(addressClass, detail);
+  return {
+    address,
+    family,
+    nonPublic: addressClass,
+    alwaysRefused,
+    kind,
+    description: `${address} is ${kind}`,
+  };
+};
 
 /** Parse one IPv4 part as the URL standard and inet_aton do: 0x hex, leading-0 octal, else decimal. */
 const ipv4Part = (part: string): number | undefined => {
@@ -164,18 +202,14 @@ const classifyIpv4 = (value: number): AddressVerdict => {
   const address = dotted(value);
   for (const [base, bits, addressClass, detail] of RANGES_V4)
     if (inRange(value, base, bits))
-      return {
+      return verdictOf(
         address,
-        family: 4,
-        nonPublic: addressClass,
-        description: describe(address, addressClass, detail),
-      };
-  return {
-    address,
-    family: 4,
-    nonPublic: undefined,
-    description: `${address} is a public address`,
-  };
+        4,
+        addressClass,
+        detail,
+        addressClass === "link-local" || detail === CLOUD_METADATA,
+      );
+  return verdictOf(address, 4, undefined);
 };
 
 /** Eight 16-bit groups of an IPv6 literal, accepting a zone id and an embedded IPv4 tail. */
@@ -243,29 +277,30 @@ const nonPublic6 = (
   address: string,
   addressClass: NonPublicAddressClass,
   detail?: string,
-): AddressVerdict => ({
-  address,
-  family: 6,
-  nonPublic: addressClass,
-  description: describe(address, addressClass, detail),
-});
+  alwaysRefused = false,
+): AddressVerdict => verdictOf(address, 6, addressClass, detail, alwaysRefused);
 
 const prefixIs = (
   groups: readonly number[],
   prefix: readonly number[],
 ): boolean => prefix.every((value, index) => groups[index] === value);
 
-/** Embedded IPv4 forms are classed as IPv6 so a refusal names both layers. */
+/**
+ * Embedded IPv4 forms are classed as IPv6 so a refusal names both layers; one
+ * that embeds an always-refused IPv4 address is always refused too.
+ */
 const classifyEmbeddedIpv6 = (
   groups: readonly number[],
   address: string,
 ): AddressVerdict | undefined => {
+  const inner = (): AddressVerdict => classifyIpv4(embeddedIpv4(groups));
   if (prefixIs(groups, [0, 0, 0, 0, 0, 0xffff])) {
-    const inner = classifyIpv4(embeddedIpv4(groups));
+    const embedded = inner();
     return nonPublic6(
       address,
       "ipv4-mapped",
-      `embeds ${inner.nonPublic === undefined ? "public" : inner.nonPublic} ${inner.address}`,
+      `embeds ${embedded.nonPublic === undefined ? "public" : embedded.nonPublic} ${embedded.address}`,
+      embedded.alwaysRefused,
     );
   }
   if (prefixIs(groups, [0, 0, 0, 0, 0, 0])) {
@@ -273,34 +308,40 @@ const classifyEmbeddedIpv6 = (
       return nonPublic6(address, "unspecified");
     if (groups[6] === 0 && groups[7] === 1)
       return nonPublic6(address, "loopback");
-    return nonPublic6(address, "ipv4-compatible");
+    return nonPublic6(
+      address,
+      "ipv4-compatible",
+      undefined,
+      inner().alwaysRefused,
+    );
   }
   if (prefixIs(groups, [0x64, 0xff9b, 0, 0, 0, 0])) {
-    const inner = classifyIpv4(embeddedIpv4(groups));
-    return inner.nonPublic === undefined
+    const embedded = inner();
+    return embedded.nonPublic === undefined
       ? undefined
       : nonPublic6(
           address,
           "address-translation",
-          `NAT64 of ${inner.nonPublic} ${inner.address}`,
+          `NAT64 of ${embedded.nonPublic} ${embedded.address}`,
+          embedded.alwaysRefused,
         );
   }
   return undefined;
 };
+
+/** fd00:ec2::254, the IPv6 cloud instance metadata address. */
+const IPV6_CLOUD_METADATA = [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254] as const;
 
 const classifyIpv6 = (groups: readonly number[]): AddressVerdict => {
   const address = formatIpv6(groups);
   const embedded = classifyEmbeddedIpv6(groups, address);
   if (embedded !== undefined) return embedded;
   const [first = 0, second = 0] = groups;
+  if (prefixIs(groups, IPV6_CLOUD_METADATA))
+    return nonPublic6(address, "unique-local", CLOUD_METADATA, true);
   if (prefixIs(groups, [0x64, 0xff9b])) {
     if (prefixIs(groups, [0x64, 0xff9b, 0, 0, 0, 0]))
-      return {
-        address,
-        family: 6,
-        nonPublic: undefined,
-        description: `${address} is a public address`,
-      };
+      return verdictOf(address, 6, undefined);
     return nonPublic6(address, "address-translation");
   }
   if (prefixIs(groups, [0x100, 0, 0, 0]))
@@ -315,16 +356,12 @@ const classifyIpv6 = (groups: readonly number[]): AddressVerdict => {
   if (first === 0x3fff && second < 0x1000)
     return nonPublic6(address, "documentation");
   if ((first & 0xfe00) === 0xfc00) return nonPublic6(address, "unique-local");
-  if ((first & 0xffc0) === 0xfe80) return nonPublic6(address, "link-local");
+  if ((first & 0xffc0) === 0xfe80)
+    return nonPublic6(address, "link-local", undefined, true);
   if ((first & 0xffc0) === 0xfec0) return nonPublic6(address, "site-local");
   if ((first & 0xff00) === 0xff00) return nonPublic6(address, "multicast");
   if ((first & 0xe000) !== 0x2000) return nonPublic6(address, "reserved");
-  return {
-    address,
-    family: 6,
-    nonPublic: undefined,
-    description: `${address} is a public address`,
-  };
+  return verdictOf(address, 6, undefined);
 };
 
 /** A host as a resolver or socket takes it: a URL's bracketed IPv6 hostname loses its brackets. */
@@ -390,11 +427,51 @@ const refusal = (
   port: number,
   addressClass: DestinationRefusal["addressClass"],
   reason: string,
-): DestinationRefusal => ({ host, port, addressClass, reason });
+  alwaysRefused = false,
+): DestinationRefusal => ({
+  host,
+  port,
+  addressClass,
+  reason,
+  ...(alwaysRefused ? { alwaysRefused: true } : {}),
+});
+
+/** At most this many allowed private origins; a scenario names a few dev servers, not a network. */
+const MAX_ALLOWED_PRIVATE_ORIGINS = 32;
+
+/**
+ * One exact origin a caller allows although it is not public. An
+ * always-refused address (see `AddressVerdict.alwaysRefused`) can never be
+ * allowed, in any spelling the URL parser reads as that address.
+ */
+export const allowedPrivateOriginSchema = browserOriginSchema.superRefine(
+  (origin, context) => {
+    const verdict = classifyAddress(new URL(origin).hostname);
+    if (verdict?.alwaysRefused === true)
+      context.addIssue({
+        code: "custom",
+        message: `${verdict.description}; link-local and cloud metadata addresses cannot be allowed`,
+      });
+  },
+);
+
+/** The `allow_private_origins` input: exact origins, none by default. */
+export const allowPrivateOriginsSchema = (
+  description: string,
+): z.ZodDefault<z.ZodArray<typeof allowedPrivateOriginSchema>> =>
+  z
+    .array(allowedPrivateOriginSchema)
+    .max(MAX_ALLOWED_PRIVATE_ORIGINS)
+    .default([])
+    .describe(description);
 
 const familyOf = (family: number): 4 | 6 => (family === 6 ? 6 : 4);
 
-/** Resolve a name once and keep it only when every answer is public. */
+/**
+ * Resolve a name once and keep it only when every answer is public, or, for an
+ * allowed origin, when no answer is link-local or cloud metadata. Reasons say
+ * "the name" rather than repeat it: `destinationLabel` quotes it.
+ */
 const vetName = async (
   host: string,
   port: number,
@@ -412,13 +489,13 @@ const vetName = async (
         host,
         port,
         "unresolved",
-        `${host} could not be resolved (${code})`,
+        `the name could not be resolved (${code})`,
       ),
     );
   }
   if (answers.length === 0)
     return err(
-      refusal(host, port, "unresolved", `${host} resolved to no address`),
+      refusal(host, port, "unresolved", "the name resolved to no address"),
     );
   const addresses: ResolvedAddress[] = [];
   for (const answer of answers) {
@@ -429,16 +506,17 @@ const vetName = async (
           host,
           port,
           "unresolved",
-          `${host} resolved to a value that is not an address`,
+          "the name resolved to a value that is not an address",
         ),
       );
-    if (verdict.nonPublic !== undefined && !allowed)
+    if (verdict.nonPublic !== undefined && (!allowed || verdict.alwaysRefused))
       return err(
         refusal(
           host,
           port,
           verdict.nonPublic,
-          `${host} resolves to ${verdict.description}`,
+          `the name resolves to ${verdict.address}, ${verdict.kind}`,
+          verdict.alwaysRefused,
         ),
       );
     addresses.push({
@@ -455,10 +533,11 @@ const vetName = async (
 };
 
 /**
- * The refusal a destination earns without any lookup: a non-public literal, a
- * `localhost` name or no host at all, unless the caller allowed that exact
- * host and port. Undefined means the literal is public, the destination is
- * allowed, or the host is a name whose addresses are still unknown.
+ * The refusal a destination earns without any lookup: a link-local or cloud
+ * metadata literal always; another non-public literal, a `localhost` name or
+ * no host at all unless the caller allowed that exact host and port.
+ * Undefined means the literal is public, the destination is allowed, or the
+ * host is a name whose addresses are still unknown.
  */
 export const refuseWithoutLookup = (
   hostname: string,
@@ -466,8 +545,10 @@ export const refuseWithoutLookup = (
   allowedPrivate: ReadonlySet<string>,
 ): DestinationRefusal | undefined => {
   const host = bareHost(hostname);
-  if (allowedPrivate.has(destinationKey(host, port))) return undefined;
   const verdict = classifyAddress(host);
+  if (verdict?.alwaysRefused === true && verdict.nonPublic !== undefined)
+    return refusal(host, port, verdict.nonPublic, verdict.description, true);
+  if (allowedPrivate.has(destinationKey(host, port))) return undefined;
   if (verdict !== undefined)
     return verdict.nonPublic === undefined
       ? undefined
@@ -479,7 +560,7 @@ export const refuseWithoutLookup = (
         host,
         port,
         "localhost-name",
-        `${host} is a localhost name, which always means this host`,
+        "the name is a localhost name, which always means this host",
       )
     : undefined;
 };
@@ -488,8 +569,9 @@ export const refuseWithoutLookup = (
  * Decide whether REA may connect to `host:port`. A literal is classified
  * directly; a `localhost` name is loopback; any other name is resolved exactly
  * once and refused unless every answer is public. Connect only to the returned
- * addresses. An allowed private destination skips classification but is still
- * pinned to the addresses resolved here.
+ * addresses. An allowed private destination admits non-public answers other
+ * than link-local and cloud metadata ones, and is still pinned to the
+ * addresses resolved here.
  */
 export const vetDestination = async (
   hostname: string,
@@ -516,6 +598,47 @@ export const vetDestination = async (
 export const isUnresolved = (value: DestinationRefusal): boolean =>
   value.addressClass === "unresolved";
 
+/** Longest host name a refusal quotes; DNS names reach 253 characters and SOCKS names 255. */
+const MAX_QUOTED_HOST_CHARACTERS = 80;
+
+/**
+ * A JSON string literal in printable ASCII: besides quotes and control
+ * characters, line separators and bidirectional controls are escaped too, so
+ * the quoted text can neither end the quote nor reorder or split the line.
+ */
+const asciiQuoted = (text: string): string =>
+  JSON.stringify(text).replace(/[^\x20-\x7e]/gu, (character) => {
+    let escaped = "";
+    for (let index = 0; index < character.length; index += 1)
+      escaped += `\\u${character.charCodeAt(index).toString(16).padStart(4, "0")}`;
+    return escaped;
+  });
+
+/**
+ * How evidence and errors name a destination. An address is printed in REA's
+ * canonical form. A host name is text a page or caller chose, so it is labelled
+ * untrusted, quoted as an ASCII JSON string and cut to 80 characters: it can
+ * never read as REA's own words or instructions.
+ */
+export const destinationLabel = (host: string, port: number): string => {
+  const canonical = canonicalHost(host);
+  if (classifyAddress(host) !== undefined)
+    return `${canonical}:${String(port)}`;
+  const characters = Array.from(canonical);
+  const cut = characters.length > MAX_QUOTED_HOST_CHARACTERS;
+  const quoted = asciiQuoted(
+    cut ? characters.slice(0, MAX_QUOTED_HOST_CHARACTERS).join("") : canonical,
+  );
+  const shown = cut
+    ? ` (first ${String(MAX_QUOTED_HOST_CHARACTERS)} of ${String(characters.length)} characters)`
+    : "";
+  return `untrusted host name ${quoted}${shown} on port ${String(port)}`;
+};
+
 /** One line for evidence and errors: the refused destination and its address class. */
 export const refusalSentence = (value: DestinationRefusal): string =>
-  `Refused ${canonicalHost(value.host)}:${String(value.port)}: ${value.reason}. Only public internet addresses are reached unless the exact origin is allowed with allow_private_origins.`;
+  `Refused ${destinationLabel(value.host, value.port)}: ${value.reason}. ${
+    value.alwaysRefused === true
+      ? "Link-local and cloud metadata addresses are never reached, even for an allowed origin."
+      : "Only public internet addresses are reached unless the exact origin is allowed with allow_private_origins."
+  }`;

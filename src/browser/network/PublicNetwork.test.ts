@@ -167,8 +167,23 @@ it("reports a name with no address as fetch's network failure, not a refusal", a
   await expect(failure).rejects.not.toBeInstanceOf(DestinationRefusedError);
   await expect(failure).rejects.toMatchObject({
     message: "fetch failed",
-    cause: { message: "missing.test could not be resolved (ENOTFOUND)" },
+    cause: {
+      message:
+        'untrusted host name "missing.test" on port 443: the name could not be resolved (ENOTFOUND)',
+    },
   });
+});
+
+it("ends a download whose name lookup stalls when the caller's signal aborts", async () => {
+  const controller = new AbortController();
+  const reason = new Error("download deadline");
+  const stalled = vettedFetch("https://stalled.test/state.json", {
+    redirect: "error",
+    signal: controller.signal,
+    policy: destinationPolicy([], () => new Promise(() => undefined)),
+  });
+  setTimeout(() => controller.abort(reason), 10);
+  await expect(stalled).rejects.toBe(reason);
 });
 
 it("rejects with the caller's abort reason", async () => {

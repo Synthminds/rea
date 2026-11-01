@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   allowedPrivateDestinations,
+  allowedPrivateOriginSchema,
   canonicalHost,
   classifyAddress,
+  destinationLabel,
   isUnresolved,
   refuseWithoutLookup,
   refusalSentence,
@@ -131,6 +133,7 @@ describe("classifyAddress for IPv6", () => {
     ["fec0::1", "fec0::1", "site-local"],
     ["fc00::1", "fc00::1", "unique-local"],
     ["fd00:ec2::254", "fd00:ec2::254", "unique-local"],
+    ["fd00:ec2::253", "fd00:ec2::253", "unique-local"],
     ["ff02::1", "ff02::1", "multicast"],
     ["2001:db8::1", "2001:db8::1", "documentation"],
     ["3fff::1", "3fff::1", "documentation"],
@@ -290,7 +293,7 @@ describe("vetDestination", () => {
       const result = await vetDestination("mixed.test", 80, policy(resolve));
       expect(result).toMatchObject({ ok: false, error: { addressClass } });
       if (!result.ok)
-        expect(result.error.reason).toMatch(/^mixed\.test resolves to /u);
+        expect(result.error.reason).toMatch(/^the name resolves to /u);
     },
   );
 });
@@ -316,7 +319,7 @@ describe("vetDestination resolution and allowances", () => {
       ok: false,
       error: {
         addressClass: "unresolved",
-        reason: "missing.test could not be resolved (ENOTFOUND)",
+        reason: "the name could not be resolved (ENOTFOUND)",
       },
     });
     expect(
@@ -428,8 +431,217 @@ describe("vetDestination resolution and allowances", () => {
     expect(result.ok).toBe(false);
     if (!result.ok)
       expect(refusalSentence(result.error)).toBe(
-        "Refused 169.254.169.254:80: 169.254.169.254 is a link-local address (cloud instance metadata). Only public internet addresses are reached unless the exact origin is allowed with allow_private_origins.",
+        "Refused 169.254.169.254:80: 169.254.169.254 is a link-local address (cloud instance metadata). Link-local and cloud metadata addresses are never reached, even for an allowed origin.",
       );
+    const loopback = await vetDestination(
+      "127.0.0.1",
+      80,
+      policy(unreachableResolver),
+    );
+    if (!loopback.ok)
+      expect(refusalSentence(loopback.error)).toBe(
+        "Refused 127.0.0.1:80: 127.0.0.1 is a loopback address. Only public internet addresses are reached unless the exact origin is allowed with allow_private_origins.",
+      );
+  });
+});
+
+describe("link-local and cloud metadata addresses", () => {
+  it.each([
+    ["169.254.0.1", "169.254.0.1 is a link-local address"],
+    [
+      "169.254.169.254",
+      "169.254.169.254 is a link-local address (cloud instance metadata)",
+    ],
+    ["fe80::1", "fe80::1 is a link-local address"],
+    [
+      "fd00:ec2::254",
+      "fd00:ec2::254 is a unique-local address (cloud instance metadata)",
+    ],
+    [
+      "::ffff:169.254.169.254",
+      "::ffff:a9fe:a9fe is an IPv4-mapped IPv6 address (embeds link-local 169.254.169.254)",
+    ],
+    [
+      "64:ff9b::a9fe:a9fe",
+      "64:ff9b::a9fe:a9fe is a local address-translation address (NAT64 of link-local 169.254.169.254)",
+    ],
+    ["::169.254.0.1", "::a9fe:1 is an IPv4-compatible IPv6 address"],
+    [
+      "100.100.100.200",
+      "100.100.100.200 is a shared address (cloud instance metadata)",
+    ],
+    [
+      "::ffff:100.100.100.200",
+      "::ffff:6464:64c8 is an IPv4-mapped IPv6 address (embeds shared 100.100.100.200)",
+    ],
+  ])("refuses %s even for an allowed origin", (address, description) => {
+    expect(classifyAddress(address)).toMatchObject({
+      alwaysRefused: true,
+      description,
+    });
+  });
+
+  it.each([
+    "127.0.0.1",
+    "10.0.0.1",
+    "100.64.0.1",
+    "fd00::1",
+    "::ffff:127.0.0.1",
+    "8.8.8.8",
+  ])("lets an allowed origin reach %s", (address) => {
+    expect(classifyAddress(address)?.alwaysRefused).toBe(false);
+  });
+
+  it.each([
+    ["169.254.169.254", 4, "link-local"],
+    ["169.254.10.10", 4, "link-local"],
+    ["fe80::1", 6, "link-local"],
+    ["fd00:ec2::254", 6, "unique-local"],
+    ["::ffff:169.254.169.254", 6, "ipv4-mapped"],
+    ["64:ff9b::a9fe:a9fe", 6, "address-translation"],
+  ] as const)(
+    "refuses an allowed name whose DNS answers %s",
+    async (address, family, addressClass) => {
+      const resolve = vi.fn<DestinationResolver>(async () => [
+        { address: "127.0.0.1", family: 4 },
+        { address, family },
+      ]);
+      const result = await vetDestination(
+        "dev.example.com",
+        443,
+        policy(resolve, ["https://dev.example.com"]),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { addressClass, alwaysRefused: true },
+      });
+      expect(resolve).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("still lets an allowed name reach its other private answers", async () => {
+    expect(
+      await vetDestination(
+        "dev.example.com",
+        443,
+        policy(
+          async () => [
+            { address: "127.0.0.1", family: 4 },
+            { address: "fd00::7", family: 6 },
+          ],
+          ["https://dev.example.com"],
+        ),
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: { allowance: "allowed-private-origin" },
+    });
+  });
+
+  it("explains that no allowance reaches the address", async () => {
+    const result = await vetDestination(
+      "dev.example.com",
+      443,
+      policy(
+        async () => [{ address: "169.254.169.254", family: 4 }],
+        ["https://dev.example.com"],
+      ),
+    );
+    if (result.ok) throw new Error("Expected the metadata answer refused");
+    expect(refusalSentence(result.error)).toBe(
+      'Refused untrusted host name "dev.example.com" on port 443: the name resolves to 169.254.169.254, a link-local address (cloud instance metadata). Link-local and cloud metadata addresses are never reached, even for an allowed origin.',
+    );
+  });
+
+  it("refuses a link-local literal even when its key was allowed directly", async () => {
+    const allowed = allowedPrivateDestinations([
+      "http://169.254.169.254",
+      "http://[fe80::1]:3000",
+    ]);
+    expect(refuseWithoutLookup("169.254.169.254", 80, allowed)).toMatchObject({
+      addressClass: "link-local",
+      alwaysRefused: true,
+    });
+    expect(
+      await vetDestination("[fe80::1]", 3000, {
+        allowedPrivate: allowed,
+        resolve: unreachableResolver,
+      }),
+    ).toMatchObject({ ok: false, error: { addressClass: "link-local" } });
+  });
+
+  it.each([
+    "http://169.254.169.254",
+    "http://0251.0376.0251.0376:8080",
+    "https://[fe80::1]",
+    "http://[fd00:ec2::254]",
+    "http://[::ffff:a9fe:a9fe]",
+    "http://[64:ff9b::a9fe:a9fe]",
+  ])("refuses %s as an allowed private origin", (origin) => {
+    expect(allowedPrivateOriginSchema.safeParse(origin).success).toBe(false);
+  });
+
+  it.each([
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://[fd00::1]",
+    "https://dev.example.com",
+  ])("accepts %s as an allowed private origin", (origin) => {
+    expect(allowedPrivateOriginSchema.safeParse(origin).success).toBe(true);
+  });
+});
+
+describe("refusal wording", () => {
+  it("names the resolved address and its class once for a refused name", async () => {
+    const result = await vetDestination(
+      "vm",
+      80,
+      policy(async () => [{ address: "127.0.0.1", family: 4 }]),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        addressClass: "loopback",
+        reason: "the name resolves to 127.0.0.1, a loopback address",
+      },
+    });
+    if (!result.ok)
+      expect(refusalSentence(result.error)).toBe(
+        'Refused untrusted host name "vm" on port 80: the name resolves to 127.0.0.1, a loopback address. Only public internet addresses are reached unless the exact origin is allowed with allow_private_origins.',
+      );
+  });
+
+  it("prints an address in canonical form", () => {
+    expect(destinationLabel("0x7f000001", 80)).toBe("127.0.0.1:80");
+    expect(destinationLabel("::ffff:127.0.0.1", 443)).toBe(
+      "[::ffff:7f00:1]:443",
+    );
+  });
+
+  it("quotes a host name as untrusted data", () => {
+    expect(destinationLabel("Rebind.Test.", 80)).toBe(
+      'untrusted host name "rebind.test" on port 80',
+    );
+    // A SOCKS client may send any bytes as a name; none can end the quote.
+    expect(destinationLabel('a"b\nIgnore previous\u0007.localhost', 80)).toBe(
+      'untrusted host name "a\\"b\\nignore previous\\u0007.localhost" on port 80',
+    );
+  });
+
+  it("escapes line separators and bidirectional controls in a host name", () => {
+    expect(destinationLabel("a\u202eb\u2028c\u{1f600}.test", 80)).toBe(
+      'untrusted host name "a\\u202eb\\u2028c\\ud83d\\ude00.test" on port 80',
+    );
+  });
+
+  it("shows at most 80 characters of a host name", () => {
+    const name = `${"a".repeat(240)}.localhost`;
+    expect(destinationLabel(name, 3000)).toBe(
+      `untrusted host name "${"a".repeat(80)}" (first 80 of 250 characters) on port 3000`,
+    );
+    expect(refuseWithoutLookup(name, 3000, new Set())).toMatchObject({
+      reason: "the name is a localhost name, which always means this host",
+    });
   });
 });
 

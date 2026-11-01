@@ -11,6 +11,7 @@ import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 import {
   allowedPrivateDestinations,
+  destinationLabel,
   isUnresolved,
   refusalSentence,
   urlPort,
@@ -55,9 +56,10 @@ export const vetUrlDestination = async (
 ): Promise<VettedDestination> => {
   const vetted = await vetDestination(url.hostname, urlPort(url), policy);
   if (vetted.ok) return vetted.value;
+  const { host, port, reason } = vetted.error;
   if (isUnresolved(vetted.error))
     throw new TypeError("fetch failed", {
-      cause: new Error(vetted.error.reason),
+      cause: new Error(`${destinationLabel(host, port)}: ${reason}`),
     });
   throw new DestinationRefusedError(vetted.error);
 };
@@ -135,6 +137,26 @@ const webResponse = (message: IncomingMessage): Response => {
   }
 };
 
+/**
+ * Settle with the caller's abort reason as soon as the signal aborts. A name
+ * lookup cannot be cancelled, so a vetting still in flight is abandoned, not
+ * awaited: the download's deadline also bounds a stalled resolver.
+ */
+const untilAborted = <T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> => {
+  if (signal === undefined) return work;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+};
+
 const requestOnce = async (
   url: URL,
   headers: Headers,
@@ -143,8 +165,7 @@ const requestOnce = async (
 ): Promise<Response> => {
   if (url.protocol !== "http:" && url.protocol !== "https:")
     throw new TypeError(`unsupported URL scheme ${url.protocol}`);
-  const vetted = await vetUrlDestination(url, policy);
-  signal?.throwIfAborted();
+  const vetted = await untilAborted(vetUrlDestination(url, policy), signal);
   const options: RequestOptions = {
     method: "GET",
     headers: Object.fromEntries(headers),

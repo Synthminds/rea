@@ -100,7 +100,8 @@ it("refuses a name that resolves to the metadata address and records why", async
       port: 80,
       addressClass: "link-local",
       reason:
-        "evil.test resolves to 169.254.169.254 is a link-local address (cloud instance metadata)",
+        "the name resolves to 169.254.169.254, a link-local address (cloud instance metadata)",
+      alwaysRefused: true,
     },
   ]);
 });

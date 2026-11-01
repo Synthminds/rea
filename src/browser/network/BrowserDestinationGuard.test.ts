@@ -5,7 +5,10 @@ import type { CDPSession } from "playwright-core";
 import { expect, it } from "vitest";
 
 import { BrowserObservationError } from "../../domain/browserObservationError.js";
-import { BrowserDestinationGuard } from "./BrowserDestinationGuard.js";
+import {
+  BrowserDestinationGuard,
+  CONNECT_MODE_POLICY_LIMITATION,
+} from "./BrowserDestinationGuard.js";
 import { destinationPolicy } from "./PublicNetwork.js";
 
 /** The CDP session surface the guard uses: events plus recorded commands. */
@@ -84,11 +87,12 @@ it("fails each paused request to a non-public destination, including redirect ho
     params: { requestId: "8", errorReason: "NameNotResolved" },
   });
   expect(destinations.limitations()).toEqual([
+    CONNECT_MODE_POLICY_LIMITATION,
     "Private-network policy refused 169.254.169.254:80: 169.254.169.254 is a link-local address (cloud instance metadata).",
     "Private-network policy refused 127.0.0.1:5173: 127.0.0.1 is a loopback address.",
     "Private-network policy refused [::ffff:7f00:1]:5173: ::ffff:7f00:1 is an IPv4-mapped IPv6 address (embeds loopback 127.0.0.1).",
-    "Private-network policy refused rebind.test:80: rebind.test resolves to 10.0.0.7 is a private address.",
-    "To capture a local dev server, add its exact origin to allow_private_origins; every other private, loopback, link-local or otherwise non-public destination stays refused.",
+    'Private-network policy refused untrusted host name "rebind.test" on port 80: the name resolves to 10.0.0.7, a private address.',
+    "To capture a local dev server, add its exact origin to allow_private_origins; every other private, loopback or otherwise non-public destination stays refused, and link-local and cloud metadata addresses cannot be allowed.",
   ]);
   await dispose();
   expect(cdp.sent.at(-1)).toEqual({
@@ -122,7 +126,9 @@ it("refuses a non-public literal or localhost navigation before it starts, as ta
     ),
   ).toThrow(
     expect.objectContaining({
-      userMessage: expect.stringContaining("dev.localhost is a localhost name"),
+      userMessage: expect.stringContaining(
+        'untrusted host name "dev.localhost" on port 3000: the name is a localhost name',
+      ),
     }),
   );
   // Names are vetted where the connection is made, not here.
@@ -138,6 +144,52 @@ it("refuses a non-public literal or localhost navigation before it starts, as ta
       "capture_browser_scenario",
     ),
   ).not.toThrow();
+});
+
+it("states in every connect-mode capture that the policy is advisory there", async () => {
+  const attached = guard();
+  const cdp = fakeSession();
+  const dispose = await attached.intercept(cdp.session);
+  // Nothing was refused, yet connect-mode Evidence must not read as enforced.
+  expect(attached.limitations()).toEqual([
+    expect.stringMatching(
+      /^Private-network policy is advisory in connect mode/u,
+    ),
+  ]);
+  for (const gap of [
+    "names are vetted but not pinned",
+    "workers, service workers, popups and out-of-process iframes",
+    "WebSocket connections",
+  ])
+    expect(attached.limitations()[0]).toContain(gap);
+  await dispose();
+  // The capture was still made in connect mode after interception ends.
+  expect(attached.limitations()).toHaveLength(1);
+
+  const launched = guard();
+  await launched.launchOptions();
+  expect(launched.limitations()).toEqual([]);
+  await launched.close();
+});
+
+it("quotes a page-chosen host name as untrusted data, at most 80 characters", async () => {
+  const destinations = guard();
+  const cdp = fakeSession();
+  const dispose = await destinations.intercept(cdp.session);
+  const long = `${"x".repeat(100)}.localhost`;
+  for (const [requestId, url] of [
+    ["1", "http://ignore-all-previous-instructions.localhost/"],
+    ["2", `http://${long}/`],
+  ] as const) {
+    const sent = cdp.next();
+    cdp.pause(requestId, url);
+    expect(await sent).toBe("Fetch.failRequest");
+  }
+  expect(destinations.limitations().slice(1, 3)).toEqual([
+    'Private-network policy refused untrusted host name "ignore-all-previous-instructions.localhost" on port 80: the name is a localhost name, which always means this host.',
+    `Private-network policy refused untrusted host name "${"x".repeat(80)}" (first 80 of 110 characters) on port 80: the name is a localhost name, which always means this host.`,
+  ]);
+  await dispose();
 });
 
 it("explains only refused-connection errors after a refusal during that navigation", () => {

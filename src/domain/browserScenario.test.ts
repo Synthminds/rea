@@ -275,3 +275,50 @@ it("preserves the largest representable timers and an omitted action deadline", 
   expect(parsed.actions[1]).toMatchObject({ timeout_ms: 2_147_483_647 });
   expect(parsed.actions[2]).not.toHaveProperty("timeout_ms");
 });
+
+it("bounds allow_private_origins and never allows a link-local or cloud metadata origin", () => {
+  const scenario = (allowPrivateOrigins: readonly string[]) => ({
+    browser: { mode: "launch", executable_path: "/opt/chromium/chrome" },
+    start_url: { url: "http://127.0.0.1:5173/" },
+    actions: [{ step_id: "wait", action: "wait_for_timeout", duration_ms: 1 }],
+    allow_private_origins: allowPrivateOrigins,
+  });
+  expect(
+    browserScenarioSchema.parse(scenario(["http://127.0.0.1:5173"]))
+      .allow_private_origins,
+  ).toEqual(["http://127.0.0.1:5173"]);
+  for (const origin of [
+    "http://169.254.169.254",
+    "http://169.254.0.1:8080",
+    "http://0xa9fea9fe",
+    "http://[fe80::1]:3000",
+    "http://[fd00:ec2::254]",
+    "http://[::ffff:169.254.169.254]",
+  ])
+    expect(
+      browserScenarioSchema.safeParse(scenario([origin])).error?.issues,
+    ).toEqual([
+      expect.objectContaining({
+        path: ["allow_private_origins", 0],
+        message: expect.stringContaining(
+          "link-local and cloud metadata addresses cannot be allowed",
+        ),
+      }),
+    ]);
+  const origins = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, index) => `http://127.0.0.1:${String(5000 + index)}`,
+    );
+  expect(browserScenarioSchema.safeParse(scenario(origins(32))).success).toBe(
+    true,
+  );
+  expect(
+    browserScenarioSchema.safeParse(scenario(origins(33))).error?.issues,
+  ).toEqual([
+    expect.objectContaining({
+      code: "too_big",
+      path: ["allow_private_origins"],
+    }),
+  ]);
+});

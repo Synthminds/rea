@@ -10,10 +10,10 @@ import {
 } from "./browserDeadline.js";
 import { emptyArraySchema } from "./emptyArraySchema.js";
 import {
-  browserOriginSchema,
   inspectWebPageWithSourceInputSchema,
   recordedBrowserOriginSchema,
 } from "./browserObservation.js";
+import { allowPrivateOriginsSchema } from "./networkDestination.js";
 import {
   webTextArtifactMetadataSchema,
   webTextArtifactSchema,
@@ -40,12 +40,9 @@ const webBundleTotalTimeoutDescription = `Total analysis deadline phase: maximum
 export const analyzeWebBundleInputSchema = inspectWebPageWithSourceInputSchema
   .safeExtend({
     fetch_source_maps: z.boolean().default(false),
-    allow_private_origins: z
-      .array(browserOriginSchema)
-      .default([])
-      .describe(
-        "Optional exact origins whose source maps may be fetched although their addresses are not public, such as a local dev server. Defaults to none: a source-map URL or redirect hop on a private, loopback, link-local, unique-local, IPv4-mapped or other non-public address, or a name resolving to one, is policy_filtered.",
-      ),
+    allow_private_origins: allowPrivateOriginsSchema(
+      "Optional exact origins, at most 32, whose source maps may be fetched although their addresses are not public, such as a local dev server. Defaults to none: a source-map URL or redirect hop on a private, loopback, link-local, unique-local, IPv4-mapped or other non-public address, or a name resolving to one, is policy_filtered. Link-local and cloud metadata addresses cannot be allowed, and an allowed name is still refused when it resolves to one.",
+    ),
     max_heap_mb: z
       .number()
       .int()

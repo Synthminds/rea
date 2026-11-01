@@ -312,11 +312,16 @@ Teredo or NAT64 form of a non-public address, or a `localhost` or
 `http://0x7f000001/` are read as the address they name. A name is resolved
 once and refused when any of its addresses is non-public.
 
-`allow_private_origins` lists exact origins, such as a local dev server at
-`http://127.0.0.1:5173`, that the scenario may reach although they are not
-public. It defaults to none and allows only that host and port, for any scheme,
-so the dev server's WebSocket works while other ports, other spellings of the
-same address and every other non-public destination stay refused.
+`allow_private_origins` lists at most 32 exact origins, such as a local dev
+server at `http://127.0.0.1:5173`, that the scenario may reach although they
+are not public. It defaults to none and allows only that host and port, for
+any scheme, so the dev server's WebSocket works while other ports, other
+spellings of the same address and every other non-public destination stay
+refused. Link-local addresses (169.254/16, `fe80::/10`), the cloud metadata
+addresses 169.254.169.254, 100.100.100.200 and `fd00:ec2::254`, and
+IPv4-mapped, IPv4-compatible or NAT64 forms of those IPv4 addresses cannot be
+allowed: such an origin is rejected as input, and an allowed name is still
+refused when its DNS answers one of them.
 
 - **Launch mode** routes every browser connection through a SOCKS5 guard on
   127.0.0.1 inside REA. Chromium hands it the destination name; the guard
@@ -325,16 +330,36 @@ same address and every other non-public destination stay refused.
   disabled and WebRTC may not send UDP outside the proxy.
 - **Connect mode** cannot change an attached browser's proxy, so REA intercepts
   the scenario page's requests through CDP `Fetch` and fails refused ones with
-  `BlockedByClient`, including each redirect hop. The attached browser resolves
-  names itself, so a name is vetted but its address is not pinned; requests of
-  other targets (popups, out-of-process frames, workers) and WebSocket
-  handshakes are not intercepted. Use launch mode when that matters.
+  `BlockedByClient`, including each redirect hop. The policy is advisory there,
+  and every connect-mode capture says so in its `limitations`, even when
+  nothing was refused. The attached browser resolves names itself, so a name is
+  vetted but its address is not pinned. Requests of other targets (workers,
+  service workers, popups, out-of-process iframes) and WebSocket handshakes
+  are not intercepted. Use launch mode when that matters. Intercepting other
+  targets would need CDP auto-attach (`Target.setAutoAttach` with
+  `waitForDebuggerOnStart` and `flatten`) and `Fetch.enable` on each child
+  session; Playwright's CDP session API cannot address flattened child
+  sessions, so that remains a follow-up.
 
 A non-public start URL or `goto` literal is refused before navigation as
 `target_not_allowed`, whose message names the address and its class. When a
 navigation fails because the guard refused its connection, the error names the
 refused destination the same way. Every refused destination, with its address
-class and connection count, is listed in the capture's `limitations`.
+class and connection count, is listed in the capture's `limitations`. An
+address appears in REA's canonical form. A host name is chosen by the page or
+the scenario, so it appears as `untrusted host name "…"`: JSON-quoted, cut to
+its first 80 characters, and to be read as data, never as instructions.
+
+Known gaps:
+
+- The launch-mode SOCKS5 guard listens on 127.0.0.1 without authentication,
+  because Chromium cannot authenticate to a SOCKS proxy. Any local process can
+  connect through it while the scenario's browser runs. It applies the same
+  policy to those connections, including the scenario's allowed origins.
+- Only the well-known NAT64 prefixes are recognised: in `64:ff9b::/96` the
+  embedded IPv4 address is classified, and `64:ff9b:1::/48` is refused as
+  local-use translation. An operator's network-specific NAT64 prefix is
+  classed public, so its translation of a private IPv4 address is reached.
 
 ## Network evidence
 

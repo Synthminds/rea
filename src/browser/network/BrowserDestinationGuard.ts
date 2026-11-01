@@ -4,6 +4,7 @@ import { BrowserObservationError } from "../../domain/browserObservationError.js
 import type { BrowserObservationOperation } from "../../domain/browserObservationErrors.js";
 import {
   canonicalHost,
+  destinationLabel,
   isUnresolved,
   refuseWithoutLookup,
   refusalSentence,
@@ -28,7 +29,14 @@ const REFUSED_NETWORK_ERROR =
 
 /** How to allow a local dev server; every other non-public destination stays refused. */
 export const ALLOW_PRIVATE_ORIGIN_REMEDIATION =
-  "To capture a local dev server, add its exact origin to allow_private_origins; every other private, loopback, link-local or otherwise non-public destination stays refused.";
+  "To capture a local dev server, add its exact origin to allow_private_origins; every other private, loopback or otherwise non-public destination stays refused, and link-local and cloud metadata addresses cannot be allowed.";
+
+/**
+ * Connect mode cannot route an attached browser's connections, so the policy
+ * there is advisory; this line keeps that visible in every connect capture.
+ */
+export const CONNECT_MODE_POLICY_LIMITATION =
+  "Private-network policy is advisory in connect mode: the attached browser resolves host names itself, so names are vetted but not pinned to the vetted address, and requests from workers, service workers, popups and out-of-process iframes, and WebSocket connections, are not intercepted. Use launch mode to enforce the policy on every connection.";
 
 interface RefusedDestination {
   readonly refusal: DestinationRefusal;
@@ -52,6 +60,8 @@ export class BrowserDestinationGuard {
     Promise<Result<VettedDestination, DestinationRefusal>>
   >();
   #proxy: DestinationGuardProxy | undefined;
+  /** Set once an attached page is intercepted: the policy is then advisory. */
+  #advisory = false;
 
   constructor(
     private readonly policy: DestinationPolicy,
@@ -159,6 +169,7 @@ export class BrowserDestinationGuard {
    * no paused request is left without an answer.
    */
   async intercept(session: CDPSession): Promise<() => Promise<void>> {
+    this.#advisory = true;
     const onPaused = (event: {
       readonly requestId: string;
       readonly request: { readonly url: string };
@@ -220,13 +231,18 @@ export class BrowserDestinationGuard {
     await session.send("Fetch.continueRequest", { requestId });
   }
 
-  /** Evidence lines for each refused destination; empty when nothing was refused. */
+  /**
+   * Evidence lines: the connect-mode advisory, then each refused destination.
+   * A host name is quoted as untrusted data (see `destinationLabel`).
+   */
   limitations(): readonly string[] {
-    if (this.#refused.size === 0) return [];
+    const advisory = this.#advisory ? [CONNECT_MODE_POLICY_LIMITATION] : [];
+    if (this.#refused.size === 0) return advisory;
     return [
+      ...advisory,
       ...[...this.#refused.values()].map(
         ({ refusal, count }) =>
-          `Private-network policy refused ${canonicalHost(refusal.host)}:${String(refusal.port)}${count > 1 ? ` (${String(count)} connections)` : ""}: ${refusal.reason}.`,
+          `Private-network policy refused ${destinationLabel(refusal.host, refusal.port)}${count > 1 ? ` (${String(count)} connections)` : ""}: ${refusal.reason}.`,
       ),
       ...(this.#omitted === 0
         ? []
