@@ -1,3 +1,5 @@
+import { vettedFetch } from "../browser/network/PublicNetwork.js";
+
 /** Maximum admitted vendor response bytes, shared by Hopper setup adapters. */
 export const HOPPER_DOWNLOAD_BYTES = 100_000_000;
 
@@ -21,12 +23,14 @@ export const downloadHopperPackage = async (
     maxBytes > HOPPER_DOWNLOAD_BYTES
   )
     throw new RangeError("Invalid Hopper response byte budget");
-  // Exempt from the private-network policy (src/domain/networkDestination.ts):
-  // callers pass only the vendor's fixed URLs or feed filenames validated to
+  // Callers pass only the vendor's fixed URLs or feed filenames validated to
   // the https://www.hopperapp.com origin, TLS authenticates that host, and the
-  // package is signature- and hash-verified before use. No caller or page
-  // input selects this destination.
-  const response = await fetch(url, {
+  // package is signature- and hash-verified before use. The vendor still
+  // chooses redirects, so the private-network policy
+  // (src/domain/networkDestination.ts) vets the first hop and every redirect
+  // hop: a 30x to a private or metadata address is refused, never requested.
+  const response = await vettedFetch(url, {
+    redirect: "follow",
     headers: { accept: "application/json", "user-agent": "rea-installer" },
     signal:
       options.signal === undefined

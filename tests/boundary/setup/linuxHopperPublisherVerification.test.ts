@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { promises as filesystem } from "node:fs";
+import { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import {
   access,
@@ -34,6 +35,7 @@ import {
 } from "../../../src/application/HopperReleaseFeed.js";
 import * as signatures from "../../../src/process/DetachedPgpSignature.js";
 import { downloadHopperPackage } from "../../../src/application/HopperDownload.js";
+import * as publicNetwork from "../../../src/browser/network/PublicNetwork.js";
 import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
 import { OwnedFileHandle } from "../../../src/filesystem/OwnedFileHandle.js";
 import * as leases from "../../../src/process/HopperLease.js";
@@ -50,7 +52,6 @@ const portableTar = it.skipIf(process.platform === "win32");
 
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
 });
 
 /** Real native archives and cryptography; substitute only the test publisher identity. */
@@ -184,10 +185,11 @@ describe("Linux signed package retention boundary", () => {
     async (family) => {
       const f = await fixture(family);
       admitFixturePublisher(f.fingerprint);
-      const network = vi.fn(() => {
-        throw new Error("Offline");
-      });
-      vi.stubGlobal("fetch", network);
+      const network = vi
+        .spyOn(publicNetwork, "vettedFetch")
+        .mockImplementation(() => {
+          throw new Error("Offline");
+        });
       try {
         const verifiedArchive = await verifyFixtureArchive(f, family);
         expect(
@@ -203,6 +205,13 @@ describe("Linux signed package retention boundary", () => {
         const coldCommands =
           await import("../../../src/process/ExecFileOutput.js");
         const extraction = vi.spyOn(coldCommands, "execFileOutput");
+        const coldNetwork =
+          await import("../../../src/browser/network/PublicNetwork.js");
+        const coldDownload = vi
+          .spyOn(coldNetwork, "vettedFetch")
+          .mockImplementation(() => {
+            throw new Error("Offline");
+          });
         const { LinuxHopperPublisher: ColdPublisher } =
           await import("../../../src/application/LinuxHopperPublisher.js");
         const fresh = new ColdPublisher(
@@ -219,6 +228,7 @@ describe("Linux signed package retention boundary", () => {
             },
           });
           expect(network).not.toHaveBeenCalled();
+          expect(coldDownload).not.toHaveBeenCalled();
           expect(signature).toHaveBeenCalledOnce();
           expect(extraction).toHaveBeenCalledWith(
             family === "deb" ? "dpkg-deb" : "tar",
@@ -291,10 +301,11 @@ linux.each([
       await rm(join(f.cache, "archive"));
       await symlink(f.archive, join(f.cache, "archive"));
     }
-    const network = vi.fn(() => {
-      throw new Error("Must preserve the cache failure");
-    });
-    vi.stubGlobal("fetch", network);
+    const network = vi
+      .spyOn(publicNetwork, "vettedFetch")
+      .mockImplementation(() => {
+        throw new Error("Must preserve the cache failure");
+      });
     expect(await f.publisher.inspectLauncher(f.launcher)).toMatchObject({
       ok: false,
     });
@@ -628,19 +639,50 @@ linux(
   },
 );
 
+it("refuses a non-public download destination before requesting it and follows redirects only through vettedFetch", async () => {
+  // This server stands in for a private service a vendor redirect could name.
+  // vettedFetch vets each followed hop again (PublicNetwork.test.ts); this
+  // test pins that Hopper downloads use it with the default, public-only policy.
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url ?? "");
+    response.end("secret");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error("The fixture server did not bind a TCP port");
+    const url = `http://127.0.0.1:${String(address.port)}/feed`;
+    const transport = vi.spyOn(publicNetwork, "vettedFetch");
+    await expect(downloadHopperPackage(url)).rejects.toMatchObject({
+      name: "DestinationRefusedError",
+      refusal: { addressClass: "loopback" },
+    });
+    expect(requests).toEqual([]);
+    // The default policy allows no private origin, and redirects are
+    // followed only through vettedFetch, which vets each hop again.
+    expect(transport).toHaveBeenCalledExactlyOnceWith(
+      url,
+      expect.objectContaining({ redirect: "follow" }),
+    );
+    expect(transport.mock.calls[0]?.[1]).not.toHaveProperty("policy");
+  } finally {
+    server.close();
+  }
+});
+
 it("bounds a stalled metadata fetch and preserves caller cancellation", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(
-      (_url, options: RequestInit) =>
-        new Promise((_resolve, reject) => {
-          const signal = options.signal;
-          signal?.addEventListener("abort", () => reject(signal.reason), {
-            once: true,
-          });
-          signal?.throwIfAborted();
-        }),
-    ),
+  vi.spyOn(publicNetwork, "vettedFetch").mockImplementation(
+    (_url, options) =>
+      new Promise((_resolve, reject) => {
+        const signal = options.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+        signal?.throwIfAborted();
+      }),
   );
   await expect(
     downloadHopperPackage("https://www.hopperapp.com/fixture", {
@@ -657,19 +699,16 @@ it("bounds a stalled metadata fetch and preserves caller cancellation", async ()
 });
 it("cancels an oversized chunked metadata response before retaining it", async () => {
   const cancelled = vi.fn();
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(
-      async () =>
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new Uint8Array(4));
-            },
-            cancel: cancelled,
-          }),
-        ),
-    ),
+  vi.spyOn(publicNetwork, "vettedFetch").mockImplementation(
+    async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(4));
+          },
+          cancel: cancelled,
+        }),
+      ),
   );
   expect(
     await downloadHopperPackage("https://www.hopperapp.com/fixture", {

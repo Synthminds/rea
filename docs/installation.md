@@ -613,6 +613,12 @@ and digest, validates the application bundle, and atomically installs it to
 operator can choose its demo mode or activate an existing license. Homebrew and
 administrator access are not used.
 
+Hopper release metadata and package downloads connect directly to public
+internet addresses: the vendor host and every redirect hop are resolved once,
+refused when any address is private, loopback, link-local or otherwise
+non-public, and reached only at the vetted address. Proxy environment variables,
+including `NODE_USE_ENV_PROXY`, are not used for these downloads.
+
 The Hopper launcher action used by REA creates a document from an executable;
 its supported command-line interface does not attach to an already-open
 document. While another live REA session owns the same target and loader

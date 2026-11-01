@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { createDoctorHostFixture } from "./application/Doctor.fixture.js";
 import * as macHopperInstaller from "./application/MacHopper.js";
+import * as publicNetwork from "./browser/network/PublicNetwork.js";
 import { runSetup } from "./application/Setup.js";
 import { discoverSetupState } from "./application/SetupPlan.js";
 import { options } from "./application/Setup.fixture.js";
@@ -319,7 +320,7 @@ it.each([
     // os-release and process.arch. A refused download keeps the supported case
     // from writing or invoking a package manager.
     const fetch = vi
-      .spyOn(globalThis, "fetch")
+      .spyOn(publicNetwork, "vettedFetch")
       .mockResolvedValue(new Response(null, { status: 403 }));
     const host = systemSetupHost(
       createDoctorHostFixture({
