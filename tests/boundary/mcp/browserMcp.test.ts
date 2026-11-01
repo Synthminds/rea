@@ -388,6 +388,7 @@ it("delivers the source-map response URL through authenticated MCP Evidence", as
       allowed_origins: [browser.allowedOrigin],
       observation_ms: 0,
       fetch_source_maps: true,
+      allow_private_origins: [browser.allowedOrigin],
     },
   });
   expect(result.isError).not.toBe(true);
@@ -426,6 +427,8 @@ it("delivers the source-map response URL through authenticated MCP Evidence", as
       "--observation-ms",
       "0",
       "--fetch-source-maps",
+      "--allow-private-origins",
+      browser.allowedOrigin,
       "--json",
     ]),
   );

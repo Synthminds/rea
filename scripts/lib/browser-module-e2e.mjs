@@ -53,6 +53,7 @@ export async function verifyBrowserModules(
     const oracle = await loadingOracle(executable, site);
     const scenario = {
       browser: { mode: "launch", executable_path: executable },
+      allow_private_origins: [site.origin],
       start_url: { url: site.origin },
       actions: [
         {

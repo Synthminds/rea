@@ -479,6 +479,8 @@ async function verifyPublicBundle(endpoint, target, origin) {
     "--allowed-origins",
     origin,
     "--fetch-source-maps",
+    "--allow-private-origins",
+    origin,
     "--observation-ms",
     "200",
   ]);
@@ -497,6 +499,7 @@ async function verifyPublicBundle(endpoint, target, origin) {
       target_id: target,
       allowed_origins: [origin],
       fetch_source_maps: true,
+      allow_private_origins: [origin],
       observation_ms: 200,
     });
     assertBundleAnalysis(result);

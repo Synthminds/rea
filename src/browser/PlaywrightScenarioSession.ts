@@ -29,6 +29,8 @@ import {
   browserScenarioCaptureData,
   browserScenarioOperationFailure,
 } from "./BrowserScenarioPartialObservation.js";
+import { BrowserDestinationGuard } from "./network/BrowserDestinationGuard.js";
+import { destinationPolicy } from "./network/PublicNetwork.js";
 
 const OPERATION = "capture_browser_scenario" as const;
 
@@ -82,6 +84,7 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
   private readonly eventCapture: PlaywrightScenarioEvents;
   private readonly storage: PlaywrightScenarioStorage | undefined;
   private readonly serviceWorkers: PlaywrightScenarioServiceWorkers | undefined;
+  private readonly destinations: BrowserDestinationGuard;
   private readonly signal: AbortSignal | undefined;
   #storageReleased = false;
   #storageCloseCompleted = false;
@@ -101,6 +104,7 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
       readonly eventCapture: PlaywrightScenarioEvents;
       readonly storage: PlaywrightScenarioStorage | undefined;
       readonly serviceWorkers: PlaywrightScenarioServiceWorkers | undefined;
+      readonly destinations: BrowserDestinationGuard;
       readonly signal: AbortSignal | undefined;
     },
   ) {
@@ -111,6 +115,7 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
     this.eventCapture = options.eventCapture;
     this.storage = options.storage;
     this.serviceWorkers = options.serviceWorkers;
+    this.destinations = options.destinations;
     this.signal = options.signal;
     const session = this;
     this.#browserReleaseGate = {
@@ -141,15 +146,25 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
     options: {
       readonly signal?: AbortSignal;
       readonly retainCleanup?: (lease: AnalysisCleanupLease) => void;
+      /** The scenario's private-network policy; tests inject a resolver and dialer. */
+      readonly destinations?: BrowserDestinationGuard;
     },
   ): Promise<PlaywrightScenarioSession> {
     throwIfScenarioCancelled(options.signal);
     const secrets = BrowserScenarioSecrets.resolve(scenario, environment);
     if (secrets === undefined)
       throw new BrowserObservationError(OPERATION, "secret_unavailable");
+    const destinations =
+      options.destinations ??
+      new BrowserDestinationGuard(
+        destinationPolicy(scenario.allow_private_origins),
+      );
+    // Refuse a non-public start URL before any browser opens or attaches.
+    destinations.assertNavigable(secrets.url(scenario.start_url), OPERATION);
     const startedAt = performance.now();
     const openingCleanup = new Set<AnalysisCleanupLease>();
     const opening = openPlaywrightScenarioBrowser(scenario, environment, {
+      destinations,
       signal: options.signal,
       retainCleanup: (lease) => {
         openingCleanup.add(lease);
@@ -208,12 +223,11 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
       ).catch(() => undefined);
       throw cause;
     }
-    const session = await this.initializeSession(
-      opened,
-      scenario,
-      secrets,
-      options,
-    );
+    const session = await this.initializeSession(opened, scenario, secrets, {
+      ...options,
+      destinations,
+    });
+    const navigationMark = destinations.mark();
     try {
       await withPlaywrightExecutionBoundary(
         () =>
@@ -249,7 +263,7 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
         options.retainCleanup?.(session.cleanupLease);
       }
       throw browserScenarioOperationFailure(
-        cause,
+        destinations.explain(OPERATION, cause, navigationMark),
         {
           kind: "browser-scenario-observation",
           capture: browserScenarioCaptureData({
@@ -275,6 +289,7 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
     options: {
       readonly signal?: AbortSignal;
       readonly retainCleanup?: (lease: AnalysisCleanupLease) => void;
+      readonly destinations: BrowserDestinationGuard;
     },
   ): Promise<PlaywrightScenarioSession> {
     let events: PlaywrightScenarioEvents | undefined;
@@ -327,6 +342,7 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
         eventCapture: events,
         storage,
         serviceWorkers,
+        destinations: options.destinations,
         signal: options.signal,
       });
     } catch (cause: unknown) {
@@ -419,23 +435,36 @@ export class PlaywrightScenarioSession implements BrowserScenarioSessionPort {
 
   /** Preserve event coverage gaps for the aggregate capture's completeness. */
   eventLimitations(): readonly string[] {
-    return this.eventCapture.limitations();
+    return [
+      ...this.eventCapture.limitations(),
+      ...this.destinations.limitations(),
+    ];
   }
 
   async perform(
     action: BrowserScenarioAction,
     signal?: AbortSignal,
   ): Promise<void> {
-    await withPlaywrightExecutionBoundary(
-      () =>
-        performPlaywrightScenarioAction({
-          page: this.opened.page,
-          action,
-          secrets: this.secrets,
-        }),
-      "timeout_ms" in action ? action.timeout_ms : undefined,
-      signal,
-    );
+    if (action.action === "goto")
+      this.destinations.assertNavigable(
+        this.secrets.url(action.destination),
+        OPERATION,
+      );
+    const actionMark = this.destinations.mark();
+    try {
+      await withPlaywrightExecutionBoundary(
+        () =>
+          performPlaywrightScenarioAction({
+            page: this.opened.page,
+            action,
+            secrets: this.secrets,
+          }),
+        "timeout_ms" in action ? action.timeout_ms : undefined,
+        signal,
+      );
+    } catch (cause: unknown) {
+      throw this.destinations.explain(OPERATION, cause, actionMark);
+    }
     await withPlaywrightExecutionBoundary(
       () => this.storage?.settle() ?? Promise.resolve(),
       undefined,

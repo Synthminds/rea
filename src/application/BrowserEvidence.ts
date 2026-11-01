@@ -165,6 +165,11 @@ const browserParameters = (
     ...("fetch_source_maps" in input
       ? {
           fetch_source_maps: input.fetch_source_maps,
+          // The private-network opt-in changes which maps are fetched, so it
+          // is part of the recorded input whenever the caller selected one.
+          ...(input.allow_private_origins.length === 0
+            ? {}
+            : { allow_private_origins: input.allow_private_origins }),
           ...(input.max_heap_mb === undefined
             ? {}
             : { max_heap_mb: input.max_heap_mb }),

@@ -25,6 +25,8 @@ import {
   withPlaywrightExecutionBoundary,
   PLAYWRIGHT_CLEANUP_CONFIRMATION_TIMEOUT_MS,
 } from "./PlaywrightExecutionBoundary.js";
+import { BrowserDestinationGuard } from "./network/BrowserDestinationGuard.js";
+import { destinationPolicy } from "./network/PublicNetwork.js";
 import {
   releaseLateScenarioCommand,
   scenarioCommandPending,
@@ -441,6 +443,8 @@ class AttachedScenarioEnvironmentOwner {
   #timezoneOverride = false;
   #detached = false;
   #application: Promise<void> | undefined;
+  #interception: Promise<() => Promise<void>> | undefined;
+  #disposeInterception: (() => Promise<void>) | undefined;
 
   private constructor(
     private readonly page: Page,
@@ -494,6 +498,30 @@ class AttachedScenarioEnvironmentOwner {
       this.#application ?? this.#applyEnvironment(environment, signal);
     this.#application = application;
     return application;
+  }
+
+  /**
+   * Fail this page's requests to destinations the scenario's policy refuses.
+   * The pending enable is owned before its deadline starts, so an enable that
+   * completes after the deadline is still disabled when this owner closes.
+   */
+  async guard(destinations: BrowserDestinationGuard): Promise<void> {
+    if (this.#interception !== undefined) return;
+    const interception = destinations.intercept(this.session);
+    this.#interception = interception;
+    interception.then(
+      (dispose) => {
+        if (this.#interception === interception)
+          this.#disposeInterception = dispose;
+      },
+      () => undefined,
+    );
+    await withScenarioCommandDeadline(
+      () => interception,
+      this.commandTimeoutMs,
+      "command",
+      "Fetch.enable",
+    );
   }
 
   async #command(work: Promise<unknown>, method: string): Promise<void> {
@@ -620,6 +648,13 @@ class AttachedScenarioEnvironmentOwner {
         failures,
         "Attached browser environment restoration failed",
       );
+    const disposeInterception = this.#disposeInterception;
+    this.#disposeInterception = undefined;
+    this.#interception = undefined;
+    // Detaching the session also ends its interception, including an enable
+    // still pending here, so a failed Fetch.disable leaves no request policy
+    // behind in the caller's browser.
+    await disposeInterception?.().catch(() => undefined);
     await this.session.detach();
     this.#detached = true;
   }
@@ -685,6 +720,7 @@ const openAttachedScenarioBrowser = async (
   signal: AbortSignal | undefined,
   retainCleanup: ((lease: AnalysisCleanupLease) => void) | undefined,
   commandTimeoutMs: number,
+  destinations: BrowserDestinationGuard,
 ): Promise<OpenedScenarioBrowser> => {
   const lease = await acquireAttachedScenario(browserRequest, signal);
   let cleanupOwner: PlaywrightScenarioBrowserCleanupOwner | undefined;
@@ -781,6 +817,13 @@ const openAttachedScenarioBrowser = async (
       undefined,
       signal,
     );
+    // An attached browser has its own proxy settings, so the scenario page's
+    // requests are vetted through CDP interception instead of the guard proxy.
+    await withPlaywrightExecutionBoundary(
+      () => configuredEnvironment.guard(destinations),
+      undefined,
+      signal,
+    );
     return {
       ...target,
       browser,
@@ -820,12 +863,23 @@ export const openPlaywrightScenarioBrowser = async (
     readonly launcher?: ScenarioBrowserLauncher;
     readonly signal?: AbortSignal | undefined;
     readonly retainCleanup?: (lease: AnalysisCleanupLease) => void;
+    /**
+     * The scenario's private-network policy, owned by the session that reads
+     * its refusals; launch mode routes the browser through its guard proxy and
+     * closes that proxy with the browser, connect mode intercepts the page.
+     */
+    readonly destinations?: BrowserDestinationGuard;
   } = {},
 ): Promise<OpenedScenarioBrowser> => {
   // Load Playwright only when a scenario opens; MCP startup stays off its module graph.
   const launcher =
     options.launcher ?? (await import("playwright-core")).chromium;
   const commandTimeoutMs = scenarioCommandTimeoutMs(scenario);
+  const destinations =
+    options.destinations ??
+    new BrowserDestinationGuard(
+      destinationPolicy(scenario.allow_private_origins),
+    );
   if (scenario.browser.mode === "connect")
     return openAttachedScenarioBrowser(
       scenario.browser,
@@ -834,6 +888,7 @@ export const openPlaywrightScenarioBrowser = async (
       options.signal,
       options.retainCleanup,
       commandTimeoutMs,
+      destinations,
     );
 
   const profilePath = await mkdtemp(join(tmpdir(), "rea-browser-scenario-"));
@@ -842,6 +897,8 @@ export const openPlaywrightScenarioBrowser = async (
   const headless = scenario.browser.headless;
   try {
     await chmod(profilePath, 0o700);
+    // Every connection of the launched browser goes through the guard proxy.
+    const network = await destinations.launchOptions();
     context = await withScenarioCommandDeadline(
       () =>
         launcher.launchPersistentContext(profilePath, {
@@ -866,10 +923,13 @@ export const openPlaywrightScenarioBrowser = async (
           // Termux's Chromium cannot create its renderer process through Android's
           // executable boundary. Single-process mode keeps the browser and page in
           // the Termux-launched process so scenario navigation remains available.
-          args:
-            process.platform === "android"
+          args: [
+            ...(process.platform === "android"
               ? ["--no-sandbox", "--single-process"]
-              : [],
+              : []),
+            ...network.args,
+          ],
+          proxy: network.proxy,
         }),
       commandTimeoutMs,
       "handshake",
@@ -877,6 +937,7 @@ export const openPlaywrightScenarioBrowser = async (
   } catch (cause: unknown) {
     const cleanup = new AnalysisCleanupLease(async () => {
       await releaseLateScenarioCommand(cause);
+      await destinations.close();
       await rm(profilePath, { recursive: true, force: true, maxRetries: 3 });
     }, ["browser_profile"]);
     try {
@@ -889,6 +950,8 @@ export const openPlaywrightScenarioBrowser = async (
   const cleanup = new PlaywrightScenarioBrowserCleanupOwner({
     closeBrowser: async (disconnectAtBoundary) => {
       await disconnectAtBoundary(() => context.close());
+      // The guard outlives the browser so no connection ever bypasses it.
+      await destinations.close();
     },
     removeProfile: () =>
       rm(profilePath, { recursive: true, force: true, maxRetries: 3 }),

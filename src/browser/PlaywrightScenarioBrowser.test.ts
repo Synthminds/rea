@@ -165,7 +165,17 @@ it("keeps Termux execution support when launching Chromium on Android", async ()
     }),
   ).rejects.toThrow("launch boundary reached");
 
-  expect(launchOptions?.args).toEqual(["--no-sandbox", "--single-process"]);
+  // Termux's flags stay first; the private-network guard's flags follow.
+  expect(launchOptions?.args).toEqual([
+    "--no-sandbox",
+    "--single-process",
+    "--disable-quic",
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+  ]);
+  expect(launchOptions?.proxy).toEqual({
+    server: expect.stringMatching(/^socks5:\/\/127\.0\.0\.1:\d+$/u),
+    bypass: "<-loopback>",
+  });
   expect(launchOptions?.env).toEqual({
     LANG: "selected-language",
     LD_PRELOAD: "/data/data/com.termux/files/usr/lib/libtermux-exec.so",
@@ -332,6 +342,8 @@ const attachedBrowserFixture = (
   const environmentSession = {
     send: vi.fn(callbacks.send ?? (async () => undefined)),
     detach: vi.fn(callbacks.detach ?? (async () => undefined)),
+    on: vi.fn(),
+    off: vi.fn(),
   } as unknown as CDPSession;
   const page = {
     emulateMedia: vi.fn(callbacks.emulateMedia ?? (async () => undefined)),
@@ -1139,6 +1151,8 @@ it("applies command_timeout_ms to primary target lookup when service workers are
           ({
             send: () => new Promise(() => undefined),
             detach: async () => undefined,
+            on: () => undefined,
+            off: () => undefined,
           }) as unknown as CDPSession,
       } as unknown as BrowserContext,
     ],
@@ -1275,6 +1289,8 @@ it("restores an environment mutation that completes after its deadline", async (
   const environmentSession = {
     send: vi.fn(async () => undefined),
     detach: vi.fn(async () => undefined),
+    on: vi.fn(),
+    off: vi.fn(),
   } as unknown as CDPSession;
   const page = {
     emulateMedia: vi.fn(async (options: { colorScheme?: string | null }) => {

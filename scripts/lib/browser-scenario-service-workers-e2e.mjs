@@ -112,13 +112,21 @@ export async function verifyScenarioServiceWorkers(endpoint, targetId) {
       }
     }
     assert.ok(page, "External fixture page disappeared");
-    const scenarioFor = (url, actions = [], policy = "block") =>
+    // A scenario may reach only its start origin unless it names the second
+    // fixture, which only the goto, link-click and /frame cases reach.
+    const scenarioFor = (
+      url,
+      actions = [],
+      policy = "block",
+      origins = [new URL(url).origin],
+    ) =>
       browserScenarioSchema.parse({
         browser: {
           mode: "connect",
           cdp_endpoint: endpoint,
           target_id: targetId,
         },
+        allow_private_origins: origins,
         start_url: { url },
         environment: { service_workers: policy },
         actions:
@@ -234,34 +242,45 @@ export async function verifyScenarioServiceWorkers(endpoint, targetId) {
       "worker",
     );
     await page.goto("about:blank");
+    const bothOrigins = [first.origin, second.origin];
     await assertRejected(scenarioFor(second.origin), "service_worker_blocked");
     await page.goto("about:blank");
     await assertRejected(
-      scenarioFor(first.origin, [
-        {
-          step_id: "cross-origin",
-          action: "goto",
-          destination: { url: second.origin },
-          wait_until: "load",
-        },
-      ]),
+      scenarioFor(
+        first.origin,
+        [
+          {
+            step_id: "cross-origin",
+            action: "goto",
+            destination: { url: second.origin },
+            wait_until: "load",
+          },
+        ],
+        "block",
+        bothOrigins,
+      ),
       "service_worker_blocked",
     );
     await page.goto("about:blank");
     await assertRejected(
-      scenarioFor(first.origin, [
-        {
-          step_id: "link-navigation",
-          action: "click",
-          locator: { kind: "css", selector: "#navigate" },
-        },
-        { step_id: "loaded", action: "wait_for_timeout", duration_ms: 100 },
-      ]),
+      scenarioFor(
+        first.origin,
+        [
+          {
+            step_id: "link-navigation",
+            action: "click",
+            locator: { kind: "css", selector: "#navigate" },
+          },
+          { step_id: "loaded", action: "wait_for_timeout", duration_ms: 100 },
+        ],
+        "block",
+        bothOrigins,
+      ),
       "service_worker_blocked",
     );
     await page.goto("about:blank");
     await assertRejected(
-      scenarioFor(`${first.origin}/frame`),
+      scenarioFor(`${first.origin}/frame`, [], "block", bothOrigins),
       "service_worker_blocked",
     );
 

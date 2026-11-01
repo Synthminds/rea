@@ -139,6 +139,7 @@ describe("CdpBrowserProvider: approved accessibility and source capture", () => 
         target_id: "allowed-page",
         observation_ms: 0,
         fetch_source_maps: true,
+        allow_private_origins: [browser.allowedOrigin],
       }),
     );
 

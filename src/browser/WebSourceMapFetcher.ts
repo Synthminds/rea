@@ -39,6 +39,11 @@ import {
 } from "../domain/browserDeadline.js";
 import { DEFAULT_SOURCE_MAP_FETCH_TIMEOUT_MS } from "../domain/webBundleAnalysis.js";
 import { WEB_SOURCE_MAP_LIMITS } from "../domain/webSourceLocation.js";
+import {
+  DestinationRefusedError,
+  destinationPolicy,
+  vettedFetch,
+} from "./network/PublicNetwork.js";
 
 export interface WebSourceMapRequest {
   readonly scriptKey: string;
@@ -82,12 +87,32 @@ interface SourceMapDecodeContext {
   };
 }
 
+/**
+ * REA's own source-map requests reach only public addresses, plus origins the
+ * caller allowed with allow_private_origins; each redirect hop is vetted again
+ * because this fetcher follows redirects itself.
+ */
+const vettedSourceMapHost = (
+  input: AnalyzeWebBundleInput,
+): SourceMapFetchHost => {
+  const policy = destinationPolicy(input.allow_private_origins);
+  return {
+    fetch: (resource, init) =>
+      vettedFetch(resource instanceof Request ? resource.url : resource, {
+        redirect: "manual",
+        ...(init?.headers === undefined ? {} : { headers: init.headers }),
+        signal: init?.signal ?? null,
+        policy,
+      }),
+  };
+};
+
 /** Fetch and validate approved source maps without browser credentials. */
 export const fetchWebSourceMaps = async (
   requests: readonly WebSourceMapRequest[],
   input: AnalyzeWebBundleInput,
   signal?: AbortSignal,
-  host: SourceMapFetchHost = { fetch: globalThis.fetch },
+  host: SourceMapFetchHost = vettedSourceMapHost(input),
 ): Promise<WebSourceMaps> => {
   throwIfAborted(signal);
   if (requests.length === 0)
@@ -355,6 +380,13 @@ const fetchOne = async (
       return emptySourceMapItem(
         request,
         "invalid",
+        cause.message,
+        effectiveUrl,
+      );
+    if (cause instanceof DestinationRefusedError)
+      return emptySourceMapItem(
+        request,
+        "policy_filtered",
         cause.message,
         effectiveUrl,
       );

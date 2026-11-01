@@ -59,6 +59,7 @@ kept when the declared secret has at least 12 characters:
 {
   "browser": { "mode": "launch", "executable_path": "/usr/bin/chromium" },
   "start_url": { "url": "http://127.0.0.1:5230/auth", "query": [] },
+  "allow_private_origins": ["http://127.0.0.1:5230"],
   "secrets": [
     { "secret_id": "admin_password", "environment_variable": "APP_PASSWORD" }
   ],
@@ -500,7 +501,11 @@ takes exactly one part: a `data` part whose `data` is the document, or a
 either a `file://` URL of a local regular file, whose host is empty or
 `localhost`, or an `https://` URL fetched without following redirects and
 within 30 seconds, including reading the body; `mimeType`, when given, is
-`application/json`. A `file://` URL naming another host, or a UNC path such as
+`application/json`. An `https://` host must be a public address: a private,
+loopback, link-local, unique-local, IPv4-mapped or other non-public literal,
+a `localhost` name, or a name with any non-public address is refused before
+connecting, and the download connects only to the address it vetted, so DNS
+rebinding cannot swap it; use a `file://` URL for a local document. A `file://` URL naming another host, or a UNC path such as
 `file:////server/share/state.json`, is refused before anything is opened, so a
 load never reaches a network share. A loaded document is at most 32
 MiB, and so is the state as `data/get` writes it back with the members a
@@ -511,7 +516,8 @@ invalid params`; a download that fails or answers a non-2xx status is
 `-32000`. Errors never echo the uri or the content; a file or download failure
 names its category in `error.data.reason`: `not-found`, `permission`,
 `not-regular-file`, `changed` or `read-failed` for files, `timeout`,
-`http-status` or `network` (connection, TLS or a refused redirect) for
+`http-status`, `network` (connection, TLS or a refused redirect) or
+`non-public-address` (the message names only the refused address class) for
 downloads, and `cancelled` for a download the server's stop or its caller's
 departure ended.
 

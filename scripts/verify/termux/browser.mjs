@@ -33,6 +33,7 @@ try {
   const url = `http://127.0.0.1:${server.address().port}/smoke`;
   const scenario = {
     browser: { mode: "launch", executable_path: executable },
+    allow_private_origins: [new URL(url).origin],
     start_url: { url },
     actions: [
       {
