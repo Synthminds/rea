@@ -190,6 +190,7 @@ const saveCapture = async (root, name, capture) => {
 
 const scriptCaptureScenario = (executable, origin) => ({
   browser: { mode: "launch", executable_path: executable },
+  allow_private_origins: [origin],
   start_url: { url: origin },
   actions: [
     {

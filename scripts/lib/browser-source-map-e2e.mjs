@@ -51,6 +51,7 @@ export async function verifyBrowserSourceMap(
       "capture-browser-scenario",
       JSON.stringify({
         browser: { mode: "launch", executable_path: executable },
+        allow_private_origins: [site.origin],
         start_url: { url: site.origin },
         actions: [
           {
