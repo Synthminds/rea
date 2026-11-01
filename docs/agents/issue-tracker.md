@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues on `Synthminds/rea`. Use the `gh` CLI for all operations. Sessions without `gh`, such as cloud sessions, use the [GitHub MCP equivalents](#github-mcp-equivalents) below.
+Issues and specs for this repo live as GitHub issues on `Synthminds/rea`. Use the `gh` CLI where its GraphQL API answers. In Claude Code cloud sessions `gh` is installed, but `gh issue`, `gh pr` and `gh label` fail with `HTTP 403: GitHub GraphQL is not available`; `gh api` REST calls still work. There, use the [GitHub MCP equivalents](#github-mcp-equivalents) below.
 
 ## Status: Issues are disabled
 
@@ -56,7 +56,7 @@ Used by `/wayfinder`; `/to-tickets` uses **Blocking** too. The **map** is a sing
 
 ## GitHub MCP equivalents
 
-Cloud sessions have no `gh`. Use these GitHub MCP tools instead, always with `owner: "Synthminds"` and `repo: "rea"`. They obey the same status rule: while Issues are disabled, make no write.
+Where `gh` GraphQL returns 403 (Claude Code cloud sessions), use these GitHub MCP tools instead, always with `owner: "Synthminds"` and `repo: "rea"`. They obey the same status rule: while Issues are disabled, make no write.
 
 | Operation              | GitHub MCP call                                                                                                                                                                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
