@@ -185,9 +185,10 @@ rea inspect-with-lief /absolute/path/to/program --json
 rea inspect-with-lief /absolute/path/to/library.dll exports --limit 200 --json
 ```
 
-`summary` is the default operation; `sections`, `segments`, `imports` and
-`exports` return pages with `next_offset`. See
-[executable structure with LIEF](lief.md).
+`summary` is the default operation; `sections`, `segments`, `imports`,
+`exports`, `libraries`, `rpaths` and `load_commands` return pages of 64 rows
+by default with `next_offset`. `--diagnostics complete` adds LIEF's full
+warning text. See [executable structure with LIEF](lief.md).
 
 Inspect a CPython 3.7–3.13 `.pyc` header and nested marshal code objects
 without executing bytecode or installing Python:

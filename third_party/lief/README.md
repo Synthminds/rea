@@ -17,6 +17,9 @@ major and minor version match the admitted release line, and records that
 version in Evidence. Version admission identifies the supported API profile; it
 does not certify publisher authenticity. Operators remain responsible for the
 provenance of the interpreter and package they configure.
+Evidence records the resolved interpreter file and the loaded native `_lief`
+module with their SHA-256 digests; REA digests both again after each run and
+refuses the reply if either changed.
 
 Real verification on Linux x64 installed `lief==1.0.0`
 (`lief-1.0.0-cp312-abi3-manylinux_2_28_x86_64.whl`, SHA-256
