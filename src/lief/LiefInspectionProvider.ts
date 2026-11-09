@@ -40,6 +40,7 @@ import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import {
   LiefConfigurationError,
   liefFailure,
+  outputOf,
   type LiefPhase,
 } from "./LiefFailures.js";
 import {
@@ -53,6 +54,7 @@ import {
   liefRefusal,
   liefReplySchema,
   liefReport,
+  type LiefObservedRun,
 } from "./LiefReply.js";
 
 const OPERATION = "inspect_with_lief";
@@ -188,6 +190,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
           workspacePath: run.root?.path ?? null,
           observedOutput: run.capturedOutput,
           resources: this.#resources,
+          signal,
         }),
       );
     }
@@ -276,12 +279,10 @@ export class LiefInspectionProvider implements LiefInspectionPort {
           : { launcher: this.#seams.launcher }),
       },
     );
-    const diagnostics = {
-      stdout: output.stdout.text,
-      stderr: output.stderr.text,
-      truncated: output.diagnosticTruncated ?? false,
-      exit_code: output.exitCode ?? null,
-      signal: output.signal ?? null,
+    const diagnostics = outputOf(output) ?? {
+      stdout: "",
+      stderr: "",
+      truncated: false,
     };
     run.capturedOutput = diagnostics;
 
@@ -350,21 +351,29 @@ export class LiefInspectionProvider implements LiefInspectionPort {
         macho_slice: input.macho_slice ?? null,
         admitted_release: LIEF_ADMITTED_RELEASE,
         output_bytes: LIEF_LIMITS.replyBytes,
+        address_space_bytes: LIEF_LIMITS.addressSpaceBytes,
       }),
       { flag: "wx", mode: 0o600 },
     );
     return { root, paths };
   }
 
-  /** Post-run digest of the original file; the helper never opened it. */
+  /**
+   * Post-run digest of the original file; the helper never opened it. A file
+   * that grew past the admitted size, changed during this read, or vanished
+   * has provably changed even though no digest is available.
+   */
   async #digestAfter(
     input: InspectWithLiefInput,
     signal: AbortSignal | undefined,
-  ): Promise<string | null> {
+  ): Promise<LiefObservedRun["after"]> {
     try {
-      return (
-        await this.#resources.digest(input.path, input.max_file_bytes, signal)
-      ).sha256;
+      const { sha256 } = await this.#resources.digest(
+        input.path,
+        input.max_file_bytes,
+        signal,
+      );
+      return { sha256, changed: undefined };
     } catch (cause: unknown) {
       // Owned descriptor cleanup and cancellation keep their typed outcome.
       if (
@@ -374,7 +383,13 @@ export class LiefInspectionProvider implements LiefInspectionPort {
           (cause.cleanup !== undefined || cause.reason === "cancelled"))
       )
         throw cause;
-      return null;
+      const code =
+        cause instanceof Error && "code" in cause ? String(cause.code) : null;
+      const changed =
+        (cause instanceof ArtifactReaderFailure &&
+          ["limit", "integrity", "path"].includes(cause.reason)) ||
+        code === "ENOENT";
+      return { sha256: null, changed: changed ? true : null };
     }
   }
 }

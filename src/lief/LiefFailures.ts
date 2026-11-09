@@ -55,9 +55,11 @@ export interface LiefFailureContext {
   readonly workspacePath: string | null;
   readonly observedOutput: AnalysisCapturedOutput | undefined;
   readonly resources: ArtifactAnalysisResources;
+  readonly signal: AbortSignal | undefined;
 }
 
-const outputOf = (
+/** Bounded diagnostics of one owned helper run. */
+export const outputOf = (
   snapshot: ProviderProcessSnapshot | null,
 ): AnalysisCapturedOutput | undefined =>
   snapshot === null
@@ -178,6 +180,33 @@ const artifactFailure = (
   ]);
 };
 
+/** Caller cancellation observed at a descriptor read or a private-copy write. */
+const cancellationFailure = (
+  cause: unknown,
+  { signal, observedOutput }: LiefFailureContext,
+): AnalysisError | undefined => {
+  const output =
+    observedOutput === undefined ? {} : { capturedOutput: observedOutput };
+  if (cause instanceof ArtifactReaderFailure && cause.reason === "cancelled")
+    return new AnalysisCancelledError(OPERATION, {
+      cause: artifactFileCancellationCause(cause),
+      ...output,
+    });
+  // Node rejects an aborted private-copy write with its own envelope; the
+  // caller's reason, not the workspace, explains it.
+  if (
+    signal?.aborted === true &&
+    cause instanceof Error &&
+    "code" in cause &&
+    cause.code === "ABORT_ERR"
+  )
+    return new AnalysisCancelledError(OPERATION, {
+      cause: signal.reason,
+      ...output,
+    });
+  return undefined;
+};
+
 /** Classify one failure at its owning stage without discarding cleanup ownership. */
 export const liefFailure = (
   cause: unknown,
@@ -194,11 +223,8 @@ export const liefFailure = (
       (primary) => liefFailure(primary, context),
       context.observedOutput,
     );
-  if (cause instanceof ArtifactReaderFailure && cause.reason === "cancelled")
-    return new AnalysisCancelledError(OPERATION, {
-      cause: artifactFileCancellationCause(cause),
-      ...output,
-    });
+  const cancelled = cancellationFailure(cause, context);
+  if (cancelled !== undefined) return cancelled;
   if (cause instanceof OwnedCommandFailure)
     return commandFailure(cause, context);
   if (context.phase === "configuration")

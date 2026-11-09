@@ -11,7 +11,6 @@ import os
 import re
 import sys
 
-ADDRESS_SPACE_BYTES = 4 * 1024 ** 3
 MACHO_MAGICS = ("MAGIC", "MAGIC_64", "CIGAM", "CIGAM_64")
 
 
@@ -24,7 +23,7 @@ class Refusal(Exception):
         self.details = details
 
 
-def lower_resource_limits(output_bytes):
+def lower_resource_limits(output_bytes, address_space_bytes):
     """Lower soft limits where the host supports them; never raise inherited limits."""
     try:
         import resource
@@ -32,7 +31,7 @@ def lower_resource_limits(output_bytes):
         return {"address_space_bytes": None, "file_size_bytes": None, "core_file_bytes": None}
     limits = {}
     for name, kind, maximum in (
-        ("address_space_bytes", getattr(resource, "RLIMIT_AS", None), ADDRESS_SPACE_BYTES),
+        ("address_space_bytes", getattr(resource, "RLIMIT_AS", None), address_space_bytes),
         ("file_size_bytes", getattr(resource, "RLIMIT_FSIZE", None), output_bytes + 1024 * 1024),
         ("core_file_bytes", getattr(resource, "RLIMIT_CORE", None), 0),
     ):
@@ -559,7 +558,7 @@ def main(request_path):
     # Release emergency headroom before reporting an allocation failure.
     reserve = bytearray(1024 * 1024)
     try:
-        limits = lower_resource_limits(output_bytes)
+        limits = lower_resource_limits(output_bytes, int(request["address_space_bytes"]))
         value = inspect(request)
         value["resource_limits"] = limits
         reply = {"ok": True, "value": value}

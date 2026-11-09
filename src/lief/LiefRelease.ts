@@ -12,7 +12,8 @@ export const LIEF_PROVIDER_IDENTITY = {
 
 /**
  * Fixed byte budgets for one helper run. The reply holds one complete facet;
- * diagnostics hold LIEF parser warnings and Python stderr.
+ * diagnostics hold LIEF parser warnings and Python stderr. The helper lowers
+ * its address-space soft limit to the value REA sends in each request.
  */
 export const LIEF_LIMITS = {
   replyBytes: 32 * 1024 * 1024,

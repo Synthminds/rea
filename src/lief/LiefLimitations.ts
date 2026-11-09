@@ -38,7 +38,7 @@ const identityNotes = (report: LiefInspection): string[] => {
     );
   if (report.artifact_after.changed === true)
     notes.push(
-      "The selected file changed after REA copied it. Results describe the copied bytes (artifact.sha256), not the current file (artifact_after.sha256).",
+      "The selected file changed after REA copied it. Results describe the copied bytes (artifact.sha256), not the current file; artifact_after.sha256 is null when the changed file could no longer be read within max_file_bytes.",
     );
   else if (report.artifact_after.sha256 === null)
     notes.push(

@@ -64,7 +64,11 @@ export interface LiefObservedRun {
   readonly input: InspectWithLiefInput;
   readonly python: string;
   readonly before: { readonly sha256: string; readonly bytes: number };
-  readonly after: string | null;
+  /** `changed` is set only when the digest is unavailable but a change is proven. */
+  readonly after: {
+    readonly sha256: string | null;
+    readonly changed: true | null | undefined;
+  };
   readonly diagnostics: AnalysisCapturedOutput;
 }
 
@@ -137,8 +141,11 @@ export const liefReport = (
       bytes: run.before.bytes,
     },
     artifact_after: {
-      sha256: run.after,
-      changed: run.after === null ? null : run.after !== run.before.sha256,
+      sha256: run.after.sha256,
+      changed:
+        run.after.sha256 === null
+          ? (run.after.changed ?? null)
+          : run.after.sha256 !== run.before.sha256,
     },
     provider: {
       lief_version: value.lief_version,

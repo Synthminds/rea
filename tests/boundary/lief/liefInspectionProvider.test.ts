@@ -9,6 +9,7 @@ import { projectAnalysisError } from "../../../src/domain/analysisErrorProjectio
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { liefInspectionSchema } from "../../../src/domain/lief/liefInspection.js";
 import { LiefInspectionProvider } from "../../../src/lief/LiefInspectionProvider.js";
+import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
@@ -67,18 +68,29 @@ const row = (index: number) => ({
 
 /**
  * A producer speaking the helper's reply protocol in place of Python+LIEF.
- * `body` runs with `request` (the parsed request) and `reply(value)` in scope.
+ * `body` runs with `request` (the parsed request), `selected` (the original
+ * path, which the real helper never receives) and `reply(value)` in scope.
  */
 const producer = (body: string): string => `
 const fs = require("node:fs");
 const request = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const selected = process.argv[2];
 const reply = (value) => fs.writeFileSync(request.reply_path, JSON.stringify(value), { flag: "wx" });
 ${body}
 `;
 
+type RuntimeRoot = Awaited<ReturnType<typeof PrivateRuntimeRoot.create>>;
+
 const harness = async (
   body: string,
-  options: { readonly platform?: NodeJS.Platform } = {},
+  options: {
+    readonly platform?: NodeJS.Platform;
+    /** Wrap the owned private root, for example to control its removal. */
+    readonly runtime?: (
+      root: RuntimeRoot,
+    ) => Pick<RuntimeRoot, "path" | "close">;
+    readonly onSpawn?: (process: { readonly pid?: number | undefined }) => void;
+  } = {},
 ) => {
   const directory = await createTestTempDirectory("rea-lief-provider-");
   const path = join(directory, "selected.elf");
@@ -87,37 +99,52 @@ const harness = async (
   const observed: {
     cwd: string | undefined;
     arguments: readonly string[] | undefined;
-  } = { cwd: undefined, arguments: undefined };
+    roots: string[];
+  } = { cwd: undefined, arguments: undefined, roots: [] };
   const provider = new LiefInspectionProvider(
     { REA_LIEF_PYTHON: process.execPath },
     {
       platform: options.platform ?? "linux",
       arch: "x64",
-      launcher: (spawn) => {
+      createRuntime: async () => {
+        const root = await PrivateRuntimeRoot.create({
+          prefix: "rea-lief-test-",
+        });
+        observed.roots.push(root.path);
+        return options.runtime?.(root) ?? root;
+      },
+      launcher: async (spawn) => {
         observed.cwd = spawn.cwd;
         observed.arguments = spawn.arguments;
-        return spawnOwnedProviderProcess({
+        const spawned = await spawnOwnedProviderProcess({
           ...spawn,
           command: process.execPath,
-          arguments: ["-e", producer(body), spawn.arguments.at(-1) ?? ""],
+          arguments: ["-e", producer(body), spawn.arguments.at(-1) ?? "", path],
         });
+        options.onSpawn?.(spawned.process);
+        return spawned;
       },
     },
   );
   const service = new LiefInspectionService(provider);
+  const exists = async (candidate: string) => {
+    try {
+      await access(candidate);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   return {
     path,
     sha256: createHash("sha256").update(bytes).digest("hex"),
     observed,
     service,
+    provider,
+    exists,
     async rootRemoved() {
-      if (observed.cwd === undefined) return true;
-      try {
-        await access(observed.cwd);
-        return false;
-      } catch {
-        return true;
-      }
+      for (const root of observed.roots) if (await exists(root)) return false;
+      return true;
     },
   };
 };
@@ -179,8 +206,8 @@ posix(
   async () => {
     const fixture = await harness(`
       const items = [1, 2, 3, 4, 5].map((index) => (${row.toString()})(index));
-      const selected = request.limit === 9 ? items : items.slice(request.offset, request.offset + request.limit);
-      reply({ ok: true, value: { ...${JSON.stringify(value({ summary: null }))}, page: { applicable: true, total: items.length, items: selected } } });
+      const window = request.limit === 9 ? items : items.slice(request.offset, request.offset + request.limit);
+      reply({ ok: true, value: { ...${JSON.stringify(value({ summary: null }))}, page: { applicable: true, total: items.length, items: window } } });
     `);
     const page = await fixture.service.inspect({
       path: fixture.path,
@@ -247,6 +274,32 @@ posix.each([
   [
     { reason: "output-limit", message: "too large", reply_bytes: 40000000 },
     { code: "resource_constraint", retryable: false },
+  ],
+  [
+    { reason: "malformed", message: "unreadable ELF class" },
+    {
+      code: "invalid_request",
+      details: { issues: [{ path: ["path"], reason: "invalid_format" }] },
+    },
+  ],
+  [
+    { reason: "not-applicable", message: "Mach-O only" },
+    {
+      code: "invalid_request",
+      details: { issues: [{ path: ["macho_slice"], reason: "invalid_value" }] },
+    },
+  ],
+  [
+    { reason: "decoder", message: "AttributeError: no such field" },
+    {
+      code: "execution_failure",
+      details: {
+        diagnostics: {
+          stage: "lief-parse",
+          reason: "AttributeError: no such field",
+        },
+      },
+    },
   ],
 ])(
   "projects the %o refusal without partial structure",
@@ -317,17 +370,163 @@ posix.each([
 );
 
 posix(
-  "returns typed cancellation when the caller aborts during the helper run",
+  "returns typed cancellation once the helper is running and stops its process",
   async () => {
-    const fixture = await harness("setInterval(() => {}, 1000);");
     const controller = new AbortController();
-    const running = fixture.service.inspect(
-      { path: fixture.path },
-      { signal: controller.signal },
+    let pid: number | undefined;
+    const fixture = await harness("setInterval(() => {}, 1000);", {
+      // Abort only after the owned helper exists, so the run phase is covered.
+      onSpawn: (child) => {
+        pid = child.pid;
+        controller.abort(new Error("caller stopped"));
+      },
+    });
+    expect(
+      await failure(
+        await fixture.service.inspect(
+          { path: fixture.path },
+          { signal: controller.signal },
+        ),
+      ),
+    ).toMatchObject({ code: "cancelled" });
+    expect(pid).toBeTypeOf("number");
+    expect(() => process.kill(pid ?? 0, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
     );
-    setTimeout(() => controller.abort(new Error("caller stopped")), 200);
-    expect(await failure(await running)).toMatchObject({ code: "cancelled" });
     expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "returns typed cancellation when the caller aborts while REA stages the private copy",
+  async () => {
+    const controller = new AbortController();
+    const fixture = await harness("process.exit(9);", {
+      runtime: (root) => {
+        controller.abort(new Error("caller stopped"));
+        return root;
+      },
+    });
+    const projected = await failure(
+      await fixture.service.inspect(
+        { path: fixture.path },
+        { signal: controller.signal },
+      ),
+    );
+    expect(projected).toMatchObject({ code: "cancelled" });
+    expect(fixture.observed.cwd).toBeUndefined();
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "keeps a completed observation when the caller aborts during private-copy removal",
+  async () => {
+    const controller = new AbortController();
+    const fixture = await harness(
+      `reply({ ok: true, value: ${JSON.stringify(value())} });`,
+      {
+        runtime: (root) => ({
+          path: root.path,
+          close: async () => {
+            controller.abort(new Error("caller stopped late"));
+            await root.close();
+          },
+        }),
+      },
+    );
+    const projected = await failure(
+      await fixture.service.inspect(
+        { path: fixture.path },
+        { signal: controller.signal },
+      ),
+    );
+    expect(projected).toMatchObject({
+      code: "cancelled",
+      details: {
+        partial_observation: {
+          operation: "inspect_with_lief",
+          normalized_result: { artifact: { sha256: fixture.sha256 } },
+        },
+      },
+    });
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "retains a private copy whose removal fails and releases it before the next call",
+  async () => {
+    let deny = true;
+    const fixture = await harness(
+      `reply({ ok: true, value: ${JSON.stringify(value())} });`,
+      {
+        runtime: (root) => ({
+          path: root.path,
+          close: async () => {
+            if (deny) {
+              deny = false;
+              throw new Error("authored cleanup denial");
+            }
+            await root.close();
+          },
+        }),
+      },
+    );
+    const first = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    const [retained] = fixture.observed.roots;
+    expect(first).toMatchObject({
+      code: "cleanup_incomplete",
+      details: {
+        cleanup: "incomplete",
+        resources: expect.arrayContaining([retained]),
+        partial_observation: {
+          normalized_result: { artifact: { sha256: fixture.sha256 } },
+        },
+      },
+    });
+    expect(await fixture.exists(retained ?? "")).toBe(true);
+    const second = await fixture.service.inspect({ path: fixture.path });
+    if (!second.ok) throw second.error;
+    expect(await fixture.rootRemoved()).toBe(true);
+    await fixture.provider.close();
+  },
+);
+
+posix.each([
+  [
+    "grows past max_file_bytes",
+    "fs.appendFileSync(selected, 'x');",
+    (sha256: string | null) => expect(sha256).toBeNull(),
+  ],
+  [
+    "is rewritten in place",
+    "const bytes = fs.readFileSync(selected); bytes[9] ^= 0xff; fs.writeFileSync(selected, bytes);",
+    (sha256: string | null) => expect(sha256).toMatch(/^[0-9a-f]{64}$/u),
+  ],
+])(
+  "reports a selected file that %s after the copy as changed",
+  async (_case, change, checkDigest) => {
+    const fixture = await harness(
+      `${change} reply({ ok: true, value: ${JSON.stringify(value())} });`,
+    );
+    const result = await fixture.service.inspect({
+      path: fixture.path,
+      max_file_bytes: 64,
+    });
+    if (!result.ok) throw result.error;
+    const report = liefInspectionSchema.parse(
+      parseEvidence(result.value).normalized_result,
+    );
+    expect(report.artifact.sha256).toBe(fixture.sha256);
+    expect(report.artifact_after.changed).toBe(true);
+    expect(report.artifact_after.sha256).not.toBe(fixture.sha256);
+    checkDigest(report.artifact_after.sha256);
+    expect(report.limitations.join("\n")).toContain(
+      "changed after REA copied it",
+    );
   },
 );
 
