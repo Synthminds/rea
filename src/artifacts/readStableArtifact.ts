@@ -47,15 +47,22 @@ const afterValidation = async <T>(
   }
 };
 
-/** Stream every byte of one stable regular file to `consume`; returns the byte count. */
-const readStableChunks = async (
+/**
+ * Stream one bounded regular file to `sink`, rejecting replacement or in-place
+ * changes. `complete` runs inside descriptor ownership so a failed close still
+ * retains the completed result.
+ */
+const readStableChunks = async <Result>(
   path: string,
   maximumBytes: number,
   signal: AbortSignal | undefined,
   fileSystem: StableArtifactFileSystem,
   resourceScope: ArtifactResourceScope | undefined,
-  consume: (bytes: Buffer) => void,
-): Promise<number> => {
+  sink: {
+    readonly accept: (bytes: Buffer) => void;
+    readonly complete: (count: number) => Result;
+  },
+): Promise<Result> => {
   assertArtifactReadActive(signal);
   const before = await fileSystem.lstat(path);
   if (!before.isFile() || before.isSymbolicLink())
@@ -111,7 +118,7 @@ const readStableChunks = async (
             `Selected artifact grew beyond its byte limit: ${path}`,
             { boundary: "file-size" },
           );
-        consume(bytes);
+        sink.accept(bytes);
       }
       const after = await file.stat({ bigint: true });
       const current = await afterValidation(path, "during read", () =>
@@ -134,7 +141,7 @@ const readStableChunks = async (
           `Artifact changed during read: ${path}`,
         );
       assertArtifactReadActive(signal);
-      return count;
+      return sink.complete(count);
     },
   );
 };
@@ -148,25 +155,26 @@ export const readStableArtifact = async (
   resourceScope?: ArtifactResourceScope,
 ): Promise<StableArtifactSnapshot> => {
   const chunks: Buffer[] = [];
-  const count = await readStableChunks(
+  return readStableChunks(
     path,
     maximumBytes,
     signal,
     fileSystem,
     resourceScope,
-    (bytes) => chunks.push(bytes),
+    {
+      accept: (bytes) => chunks.push(bytes),
+      complete: (count) => {
+        const bytes = Buffer.concat(chunks, count);
+        return {
+          bytes,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+      },
+    },
   );
-  const bytes = Buffer.concat(chunks, count);
-  return {
-    bytes,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-  };
 };
 
-/**
- * Digest one bounded regular file under the same stability checks as
- * {@link readStableArtifact}, without retaining its bytes.
- */
+/** Digest one bounded regular file under the same checks without retaining its bytes. */
 export const digestStableArtifact = async (
   path: string,
   maximumBytes: number,
@@ -175,13 +183,15 @@ export const digestStableArtifact = async (
   resourceScope?: ArtifactResourceScope,
 ): Promise<{ readonly sha256: string; readonly bytes: number }> => {
   const hash = createHash("sha256");
-  const bytes = await readStableChunks(
+  return readStableChunks(
     path,
     maximumBytes,
     signal,
     fileSystem,
     resourceScope,
-    (chunk) => hash.update(chunk),
+    {
+      accept: (chunk) => hash.update(chunk),
+      complete: (bytes) => ({ sha256: hash.digest("hex"), bytes }),
+    },
   );
-  return { sha256: hash.digest("hex"), bytes };
 };
