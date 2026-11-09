@@ -704,12 +704,18 @@ const assertSnapshotCleanupOutcome = async (
   expect(result).toMatchObject({
     error: { cleanupIncomplete: false, cleanupResources: [] },
   });
-  if (!result.ok && mode === "snapshot-read-failure-late-abort")
+  // The composed error must still carry the snapshot's own output failure.
+  if (!result.ok)
     expect(result.error).toMatchObject({
       diagnostics: {
         primary_error: {
+          code: "cleanup_incomplete",
           details: {
-            reason: expect.stringContaining("Authored snapshot read failure"),
+            execution_failure: "unreadable_output",
+            reason:
+              mode === "snapshot-read-failure-late-abort"
+                ? expect.stringContaining("Authored snapshot read failure")
+                : "injected WABT input close failure",
           },
         },
       },
