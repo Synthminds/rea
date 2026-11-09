@@ -232,7 +232,7 @@ explicit path or endpoint and do not need it.
   `.dep-v0` section is null metadata, not proof the binary has no dependencies.
   A rustc commit hash is an inference from a read-only `/rustc/<40-hex>/` path.
   For selected crates, use `view: {collection: "packages", names: [...],
-fields: ["name", "version", "source"]}` on the first call; explicitly include
+  fields: ["name", "version", "source"]}` on the first call; explicitly include
   `dependencies` for direct index references. Use `detail: "summary"` for counts
   and ranges, or retained `inspect_analysis_view` Rust package/edge pages for
   subsequent filters. Keep the complete parent Evidence accessible; CLI compact
