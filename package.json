@@ -292,6 +292,7 @@
     "verify:test-discovery": "node scripts/verify-test-discovery.mjs",
     "verify:javascript:recovery": "node scripts/verify/javascript/recovery.mjs",
     "verify:module-boundaries": "node scripts/verify-module-boundaries.mjs",
+    "verify:lief": "npm run build:cached && node scripts/verify-lief-structure.mjs",
     "verify:browser:source-maps": "npm run build:cached && node scripts/verify-browser-source-maps.mjs",
     "verify:browser:runtime": "npm run build:cached && node scripts/verify-browser-runtime.mjs",
     "verify:web:network-captures": "npm run build:cached && node scripts/verify-web-network-captures.mjs",
