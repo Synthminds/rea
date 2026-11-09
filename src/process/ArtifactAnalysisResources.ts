@@ -430,35 +430,24 @@ export class ArtifactAnalysisResources {
     return new AnalysisOutputError(operation, cause.message, detail);
   }
 
+  /**
+   * Release the request's private roots and settle its outcome. `retainedReads`
+   * are reads that completed before their descriptor close failed: the outcome
+   * stands, and one cleanup failure names and leases those descriptors together
+   * with any root kept while they are held.
+   */
   async finish<T>(
     result: Result<T, AnalysisError>,
     observation: (value: T) => AnalysisPartialObservation,
     operation = this.operation,
     signal?: AbortSignal,
+    retainedReads: readonly ArtifactFileCleanupFailure[] = [],
   ): Promise<Result<T, AnalysisError>> {
+    let cleanup: AnalysisError | undefined;
     try {
       await this.release();
-      if (result.ok && signal?.aborted)
-        return err(
-          new AnalysisCancelledError(operation, {
-            cause: signal.reason,
-            partialObservation: observation(result.value),
-          }),
-        );
-      return result;
     } catch (cause: unknown) {
-      const partialObservation = result.ok
-        ? observation(result.value)
-        : result.error.partialObservation;
-      const primary = !result.ok
-        ? result.error
-        : signal?.aborted
-          ? new AnalysisCancelledError(operation, {
-              cause: signal.reason,
-              partialObservation,
-            })
-          : undefined;
-      const cleanup =
+      cleanup =
         cause instanceof AnalysisError
           ? cause
           : new ProviderCleanupError(
@@ -467,18 +456,80 @@ export class ArtifactAnalysisResources {
               { reason: String(cause) },
               { operation, cause },
             );
-      const failure =
-        primary === undefined
-          ? cleanup
-          : analysisErrorWithCleanupFailure(
-              primary,
-              cleanup,
-              operation,
-            ).bindCleanupDependencies([primary, cleanup]);
-      if (partialObservation !== undefined)
-        failure.retainPartialObservation(partialObservation);
-      return err(failure);
     }
+    if (retainedReads.length > 0)
+      cleanup = this.#retainedReadFailure(retainedReads, cleanup, operation);
+    if (cleanup === undefined)
+      return result.ok && signal?.aborted
+        ? err(
+            new AnalysisCancelledError(operation, {
+              cause: signal.reason,
+              partialObservation: observation(result.value),
+            }),
+          )
+        : result;
+    const partialObservation = result.ok
+      ? observation(result.value)
+      : result.error.partialObservation;
+    const primary = !result.ok
+      ? result.error
+      : signal?.aborted
+        ? new AnalysisCancelledError(operation, {
+            cause: signal.reason,
+            partialObservation,
+          })
+        : undefined;
+    const failure =
+      primary === undefined
+        ? cleanup
+        : analysisErrorWithCleanupFailure(
+            primary,
+            cleanup,
+            operation,
+          ).bindCleanupDependencies([primary, cleanup]);
+    if (partialObservation !== undefined)
+      failure.retainPartialObservation(partialObservation);
+    return err(failure);
+  }
+
+  /** Completed reads' still-owned descriptors and the roots they keep, as one owner set. */
+  #retainedReadFailure(
+    reads: readonly ArtifactFileCleanupFailure[],
+    roots: AnalysisError | undefined,
+    operation: string,
+  ): ProviderCleanupError {
+    const causes = [...reads, ...(roots === undefined ? [] : [roots])];
+    const failure = new ProviderCleanupError(
+      this.providerId,
+      [
+        ...new Set([
+          ...reads.flatMap((read) => read.cleanup?.resources ?? []),
+          ...(roots?.cleanupResources ?? []),
+        ]),
+      ],
+      {
+        ...roots?.diagnostics,
+        reason: [
+          ...reads.map((read) => read.cleanup?.reason ?? read.message),
+          ...(roots === undefined
+            ? []
+            : [String(roots.diagnostics?.reason ?? roots.message)]),
+        ].join("; "),
+      },
+      {
+        operation,
+        cause:
+          causes.length === 1
+            ? causes[0]
+            : new AggregateError(causes, "Analysis cleanup remains incomplete"),
+      },
+    );
+    // Roots still pending after release() are exactly those it had to keep.
+    new AnalysisCleanupLeaseGroup(failure, [
+      ...reads.map((read) => read.cleanupLease),
+      ...[...this.#pending.values()].map(({ lease }) => lease),
+    ]);
+    return failure;
   }
 
   close(): Promise<void> {

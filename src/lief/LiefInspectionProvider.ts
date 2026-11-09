@@ -4,12 +4,15 @@ import { access, realpath, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { z } from "zod";
+
 import {
   createAnalysisExecution,
   type AnalysisExecution,
   type ExecutionOptions,
 } from "../application/AnalysisProvider.js";
 import type { LiefInspectionPort } from "../application/lief/LiefInspectionPort.js";
+import { ArtifactFileCleanupFailure } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import {
   digestStableArtifact,
@@ -69,6 +72,16 @@ const EMPTY_OUTPUT: LiefOutput = {
 };
 const PRIVATE_COPY_CHANGED =
   "The LIEF helper changed REA's private read-only copy of the selected bytes; its observations are not reported. The selected file itself was not given to the helper.";
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
+/** What digestStableArtifact and readStableArtifact complete with. */
+const completedDigestSchema = z.strictObject({
+  sha256: sha256Schema,
+  bytes: z.int().nonnegative(),
+});
+const completedReadSchema = z.strictObject({
+  bytes: z.instanceof(Buffer),
+  sha256: sha256Schema,
+});
 
 type Launcher = NonNullable<Parameters<typeof runOwnedCommand>[2]>["launcher"];
 
@@ -91,6 +104,8 @@ interface LiefRun {
   phase: LiefPhase;
   root: ArtifactAnalysisRuntime | undefined;
   output: LiefOutput | undefined;
+  /** Completed post-run reads whose descriptor close failed. */
+  readonly retained: ArtifactFileCleanupFailure[];
 }
 
 /**
@@ -162,6 +177,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       phase: "configuration",
       root: undefined,
       output: undefined,
+      retained: [],
     };
     let result: Result<AnalysisExecution, AnalysisError>;
     try {
@@ -216,6 +232,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
         }),
       OPERATION,
       signal,
+      run.retained,
     );
   }
 
@@ -326,11 +343,13 @@ export class LiefInspectionProvider implements LiefInspectionPort {
     const output = liefOutput(snapshot) ?? EMPTY_OUTPUT;
     run.output = output;
 
+    // Each post-run read that completes keeps its value even if its descriptor
+    // cannot be closed; finish() reports that descriptor with the result.
     run.phase = "integrity";
-    const copy = await this.#resources.digest(
-      paths.snapshot,
-      input.max_file_bytes,
-      signal,
+    const copy = await completedRead(
+      this.#resources.digest(paths.snapshot, input.max_file_bytes, signal),
+      completedDigestSchema,
+      run.retained,
     );
     if (copy.sha256 !== before.sha256)
       throw new AnalysisOutputError(OPERATION, PRIVATE_COPY_CHANGED, {
@@ -339,10 +358,10 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       });
 
     run.phase = "producer";
-    const replyFile = await this.#resources.read(
-      paths.reply,
-      LIEF_LIMITS.replyBytes,
-      signal,
+    const replyFile = await completedRead(
+      this.#resources.read(paths.reply, LIEF_LIMITS.replyBytes, signal),
+      completedReadSchema,
+      run.retained,
     );
     const reply = liefReplySchema.parse(
       JSON.parse(replyFile.bytes.toString("utf8")),
@@ -361,8 +380,9 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       ],
       output,
       signal,
+      run.retained,
     );
-    const after = await this.#digestAfter(input, signal);
+    const after = await this.#digestAfter(input, signal, run.retained);
     return liefReport(
       { input, python: interpreter, before, after, output },
       reply.value,
@@ -378,6 +398,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
     }[],
     output: LiefOutput,
     signal: AbortSignal | undefined,
+    retained: ArtifactFileCleanupFailure[],
   ): Promise<void> {
     for (const file of files) {
       const changed = (detail: string) => {
@@ -392,10 +413,10 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       if (!isAbsolute(file.path)) throw changed("the path is not absolute");
       let sha256: string;
       try {
-        ({ sha256 } = await this.#resources.digest(
-          file.path,
-          LIEF_LIMITS.toolBytes,
-          signal,
+        ({ sha256 } = await completedRead(
+          this.#resources.digest(file.path, LIEF_LIMITS.toolBytes, signal),
+          completedDigestSchema,
+          retained,
         ));
       } catch (cause: unknown) {
         if (
@@ -454,12 +475,13 @@ export class LiefInspectionProvider implements LiefInspectionPort {
   async #digestAfter(
     input: InspectWithLiefInput,
     signal: AbortSignal | undefined,
+    retained: ArtifactFileCleanupFailure[],
   ): Promise<LiefObservedRun["after"]> {
     try {
-      const { sha256 } = await this.#resources.digest(
-        input.path,
-        input.max_file_bytes,
-        signal,
+      const { sha256 } = await completedRead(
+        this.#resources.digest(input.path, input.max_file_bytes, signal),
+        completedDigestSchema,
+        retained,
       );
       return { sha256, changed: undefined };
     } catch (cause: unknown) {
@@ -481,3 +503,34 @@ export class LiefInspectionProvider implements LiefInspectionPort {
     }
   }
 }
+
+/**
+ * The value of a post-run read that completed before only its descriptor close
+ * failed; that still-owned descriptor joins `retained`. Stable reads build
+ * their result inside descriptor ownership, so the outcome carries it. A caller
+ * abort observed during that close stays a typed cancellation, which the
+ * shared owner makes primary.
+ */
+const completedRead = async <Schema extends z.ZodType>(
+  read: Promise<z.output<Schema>>,
+  schema: Schema,
+  retained: ArtifactFileCleanupFailure[],
+): Promise<z.output<Schema>> => {
+  try {
+    return await read;
+  } catch (cause: unknown) {
+    if (
+      !(cause instanceof ArtifactFileCleanupFailure) ||
+      cause.fileCleanupFailure.completionCancellation !== undefined
+    )
+      throw cause;
+    const outcome = cause.fileCleanupFailure.outcome;
+    const completed =
+      outcome.kind === "completed"
+        ? schema.safeParse(outcome.value)
+        : undefined;
+    if (completed?.success !== true) throw cause;
+    retained.push(cause);
+    return completed.data;
+  }
+};

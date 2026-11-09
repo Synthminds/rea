@@ -160,7 +160,12 @@ Cancellation stops the owned helper process and removes the private copy.
 Cleanup that cannot complete is retained and retried before the next call. If
 the helper replied but its process group could not be confirmed stopped, the
 call returns `cleanup_incomplete` with the completed result as
-`partial_observation`.
+`partial_observation`. The same applies when a read REA makes after the helper
+exits completes but its descriptor cannot be closed: the remaining checks
+still run, and a result that passes them all is returned in one
+`cleanup_incomplete` naming each held descriptor and the private copy kept
+with it, until `close()` or the next call releases them. A failed check or a
+cancellation, including one during that close, stays the primary error.
 
 ## Cost of a call
 

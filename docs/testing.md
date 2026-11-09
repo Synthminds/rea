@@ -1806,11 +1806,14 @@ oversized, symlinked and malformed replies, diagnostics past the 4 MiB budget,
 the inline diagnostics summary, cancellation during the selected-file digest,
 while staging, while the helper runs, during result reads and during
 private-copy removal, failed removal and failed process-group cleanup after
-success and after a primary failure with retry, a `setsid` descendant swept
-by run token, and configuration errors. `bridge/lief/test_inspect.py` covers
-the helper's string decoding, `.dynsym` predicates, lazy paging, summary list
-bounds and reply encoding under `MemoryError` with controlled objects; it does
-not establish real LIEF behavior.
+success and after a primary failure with retry, a failed descriptor close
+after each completed post-run read (alone and two at once, followed by a
+failed integrity check or by cancellation, and with an abort inside that
+close) with release by `close()` and by the next call, a `setsid` descendant
+swept by run token, and configuration errors. `bridge/lief/test_inspect.py`
+covers the helper's string decoding, `.dynsym` predicates, lazy paging,
+summary list bounds and reply encoding under `MemoryError` with controlled
+objects; it does not establish real LIEF behavior.
 
 ### Offline EVM interface
 

@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
-import { access, readFile, rename, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  access,
+  lstat,
+  open,
+  readFile,
+  rename,
+  symlink,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
+import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { expect, it } from "vitest";
@@ -9,7 +18,9 @@ import { LiefInspectionService } from "../../../src/application/lief/LiefInspect
 import {
   digestStableArtifact,
   readStableArtifact,
+  type StableArtifactFileSystem,
 } from "../../../src/artifacts/readStableArtifact.js";
+import type { AnalysisError } from "../../../src/domain/analysisErrorBase.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { liefInspectionSchema } from "../../../src/domain/lief/liefInspection.js";
@@ -993,6 +1004,318 @@ posix(
     expect(await fixture.exists(retained ?? "")).toBe(true);
     gate.deny = false;
     await fixture.provider.close();
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+/**
+ * Stable-read filesystem whose descriptors deny their first close, then close
+ * for real; `onDenied` runs inside the denied close.
+ */
+const closeDenied = (
+  handles: FileHandle[],
+  onDenied?: () => void,
+): StableArtifactFileSystem => ({
+  lstat: (path) => lstat(path, { bigint: true }),
+  open: async (path, flags) => {
+    const handle = await open(path, flags);
+    handles.push(handle);
+    const close = handle.close.bind(handle);
+    let denied = false;
+    handle.close = async () => {
+      if (!denied) {
+        denied = true;
+        onDenied?.();
+        throw new Error("authored descriptor close denial");
+      }
+      await close();
+    };
+    return handle;
+  },
+});
+
+type Fixture = Awaited<ReturnType<typeof harness>>;
+
+/** REA's reads after the helper exits, in order; `earlier` reads of the same file precede the run. */
+const POST_RUN_READS = [
+  {
+    read: "private copy",
+    file: "artifact",
+    earlier: 0,
+    path: (_fixture: Fixture, root: string) => join(root, "artifact"),
+  },
+  {
+    read: "reply",
+    file: "reply.json",
+    earlier: 0,
+    path: (_fixture: Fixture, root: string) => join(root, "reply.json"),
+  },
+  {
+    read: "configured Python interpreter",
+    file: "python",
+    earlier: 1,
+    path: (fixture: Fixture) => fixture.python,
+  },
+  {
+    read: "native LIEF module",
+    file: "_lief.so",
+    earlier: 0,
+    path: (fixture: Fixture) => fixture.native,
+  },
+  {
+    read: "selected file",
+    file: "selected.elf",
+    earlier: 1,
+    path: (fixture: Fixture) => fixture.path,
+  },
+] as const;
+type PostRunRead = (typeof POST_RUN_READS)[number];
+
+/** Deny the first close of each listed post-run read's descriptor; every other read passes through. */
+const denyPostRunCloses = (
+  reads: readonly PostRunRead[],
+  handles: FileHandle[],
+  onDenied?: () => void,
+) => {
+  const seen = new Map<PostRunRead, number>();
+  const fileSystem = (path: string, real?: StableArtifactFileSystem) => {
+    const entry = reads.find((read) => read.file === basename(path));
+    if (entry === undefined) return real;
+    const count = seen.get(entry) ?? 0;
+    seen.set(entry, count + 1);
+    return count === entry.earlier ? closeDenied(handles, onDenied) : real;
+  };
+  return {
+    readArtifact:
+      (real: typeof readStableArtifact): typeof readStableArtifact =>
+      (path, bytes, signal, files, scope) =>
+        real(path, bytes, signal, fileSystem(path, files), scope),
+    digestArtifact:
+      (real: typeof digestStableArtifact): typeof digestStableArtifact =>
+      (path, bytes, signal, files, scope) =>
+        real(path, bytes, signal, fileSystem(path, files), scope),
+  };
+};
+
+const SUCCESS = `process.stderr.write("LIEF warning\\n"); reply({ ok: true, value: ${JSON.stringify(value())} });`;
+
+/** The complete, verified result a retained descriptor must not discard. */
+const completedResult = async (fixture: Fixture) => ({
+  operation: "inspect_with_lief",
+  confidence: "observed",
+  normalized_result: {
+    artifact: { sha256: fixture.sha256 },
+    artifact_after: { sha256: fixture.sha256, changed: false },
+    provider: {
+      python: { sha256: sha256(await readFile(fixture.python)) },
+      native_module: { sha256: sha256(await readFile(fixture.native)) },
+    },
+    summary: { architecture: "X86_64" },
+    diagnostics: { stderr: { bytes: 13 } },
+  },
+});
+
+posix.each(POST_RUN_READS)(
+  "keeps the completed result when the $read descriptor cannot be closed after its read",
+  async (entry) => {
+    const handles: FileHandle[] = [];
+    const fixture = await harness(SUCCESS, denyPostRunCloses([entry], handles));
+    const result = await fixture.service.inspect({ path: fixture.path });
+    if (result.ok) throw new Error("Expected cleanup_incomplete");
+    expect(handles).toHaveLength(1);
+    const root = fixture.observed.roots[0] ?? "";
+    const descriptor = entry.path(fixture, root);
+    const projected = projectAnalysisError(result.error);
+    expect(projected).toMatchObject({
+      code: "cleanup_incomplete",
+      retryable: false,
+      details: {
+        cleanup: "incomplete",
+        execution_failure: "execution_failure",
+        // The shared helper keeps the private root while any descriptor is held.
+        resources: [descriptor, root],
+        diagnostics: {
+          reason: expect.stringContaining("authored descriptor close denial"),
+        },
+        partial_observation: await completedResult(fixture),
+      },
+    });
+    // One cleanup failure carries the complete result once, without a nested copy.
+    expect(projected.details).not.toHaveProperty("captured_output");
+    expect(projected.details?.diagnostics).not.toHaveProperty("primary_error");
+    expect(handles[0]?.fd).not.toBe(-1);
+    expect(await fixture.exists(root)).toBe(true);
+    await fixture.provider.close();
+    expect(handles[0]?.fd).toBe(-1);
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "names every retained descriptor when several post-run closes fail and releases them before the next call",
+  async () => {
+    const handles: FileHandle[] = [];
+    const [copy, , , native] = POST_RUN_READS;
+    const fixture = await harness(
+      SUCCESS,
+      denyPostRunCloses([copy, native], handles),
+    );
+    const result = await fixture.service.inspect({ path: fixture.path });
+    if (result.ok) throw new Error("Expected cleanup_incomplete");
+    expect(handles).toHaveLength(2);
+    const root = fixture.observed.roots[0] ?? "";
+    const projected = projectAnalysisError(result.error);
+    expect(projected).toMatchObject({
+      code: "cleanup_incomplete",
+      details: {
+        resources: [join(root, "artifact"), fixture.native, root],
+        partial_observation: await completedResult(fixture),
+      },
+    });
+    expect(
+      String(
+        (projected.details?.diagnostics as { reason: string }).reason,
+      ).match(/authored descriptor close denial/gu),
+    ).toHaveLength(2);
+    // The next call retries both closes and the kept root before it runs.
+    reportOf(await fixture.service.inspect({ path: fixture.path }));
+    expect(handles.map((handle) => handle.fd)).toEqual([-1, -1]);
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "runs the remaining integrity reads after a retained descriptor and keeps their failure primary",
+  async () => {
+    const handles: FileHandle[] = [];
+    const fixture = await harness(
+      `fs.appendFileSync(native.path, "changed"); reply({ ok: true, value: ${JSON.stringify(value())} });`,
+      denyPostRunCloses([POST_RUN_READS[0]], handles),
+    );
+    const result = await fixture.service.inspect({ path: fixture.path });
+    if (result.ok) throw new Error("Expected a failure");
+    const root = fixture.observed.roots[0] ?? "";
+    const projected = projectAnalysisError(result.error);
+    expect(projected).toMatchObject({
+      code: "cleanup_incomplete",
+      message: expect.stringContaining(
+        "The native LIEF module changed during the LIEF run",
+      ),
+      details: {
+        execution_failure: "execution_failure",
+        resources: [join(root, "artifact"), root],
+        diagnostics: {
+          primary_error: { code: "unreadable_output" },
+          cleanup_error: {
+            details: {
+              diagnostics: {
+                reason: expect.stringContaining(
+                  "authored descriptor close denial",
+                ),
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(projected.details).not.toHaveProperty("partial_observation");
+    await fixture.provider.close();
+    expect(handles[0]?.fd).toBe(-1);
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(projectAnalysisError(result.error).code).toBe("unreadable_output");
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "keeps cancellation primary when the caller aborts after a retained descriptor",
+  async () => {
+    const handles: FileHandle[] = [];
+    const controller = new AbortController();
+    const reason = { authored: "cancel after a retained descriptor" };
+    const fixture = await harness(SUCCESS, {
+      digestArtifact: denyPostRunCloses([POST_RUN_READS[0]], handles)
+        .digestArtifact,
+      readArtifact:
+        (real) =>
+        (path, ...rest) => {
+          if (path.endsWith("reply.json")) controller.abort(reason);
+          return real(path, ...rest);
+        },
+    });
+    const result = await fixture.service.inspect(
+      { path: fixture.path },
+      { signal: controller.signal },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    const root = fixture.observed.roots[0] ?? "";
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "cleanup_incomplete",
+      details: {
+        resources: [join(root, "artifact"), root],
+        diagnostics: { primary_error: { code: "cancelled" } },
+      },
+    });
+    expect(result.error.cleanupPrimary).toMatchObject({
+      _tag: "AnalysisCancelledError",
+      cause: reason,
+    });
+    await fixture.provider.close();
+    expect(handles[0]?.fd).toBe(-1);
+    expect(projectAnalysisError(result.error).code).toBe("cancelled");
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+/** The innermost primary below every cleanup composition. */
+const primaryOf = (error: AnalysisError): AnalysisError =>
+  error.cleanupPrimary === undefined ? error : primaryOf(error.cleanupPrimary);
+
+posix.each([
+  ["a valid reply", POST_RUN_READS[1], SUCCESS],
+  [
+    "an invalid reply",
+    POST_RUN_READS[1],
+    `fs.writeFileSync(request.reply_path, "{");`,
+  ],
+  [
+    "a modified private copy",
+    POST_RUN_READS[0],
+    `fs.chmodSync(request.snapshot_path, 0o600); fs.appendFileSync(request.snapshot_path, "patched"); reply({ ok: true, value: ${JSON.stringify(value())} });`,
+  ],
+] as const)(
+  "returns typed cancellation when the caller aborts inside a denied post-run close after %s",
+  async (_case, entry, body) => {
+    const handles: FileHandle[] = [];
+    const controller = new AbortController();
+    const reason = { authored: "cancel inside a denied close" };
+    const fixture = await harness(
+      body,
+      denyPostRunCloses([entry], handles, () => controller.abort(reason)),
+    );
+    const result = await fixture.service.inspect(
+      { path: fixture.path },
+      { signal: controller.signal },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    expect(handles).toHaveLength(1);
+    const root = fixture.observed.roots[0] ?? "";
+    // The completed read does not outrank the abort observed while closing it.
+    expect(primaryOf(result.error)).toMatchObject({
+      _tag: "AnalysisCancelledError",
+      cause: reason,
+    });
+    const projected = projectAnalysisError(result.error);
+    expect(projected).toMatchObject({
+      code: "cleanup_incomplete",
+      details: { resources: [entry.path(fixture, root), root] },
+    });
+    expect(projected.details).not.toHaveProperty("partial_observation");
+    await fixture.provider.close();
+    expect(handles[0]?.fd).toBe(-1);
+    expect(projectAnalysisError(result.error).code).toBe("cancelled");
     expect(await fixture.rootRemoved()).toBe(true);
   },
 );
