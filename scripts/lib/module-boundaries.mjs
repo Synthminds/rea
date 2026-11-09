@@ -14,6 +14,7 @@ const MIGRATED_PROVIDER_ROOTS = new Set([
   "python",
   "rust",
   "wasm",
+  "lief",
   "captures",
   "signals",
   "android",

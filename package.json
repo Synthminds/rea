@@ -82,6 +82,8 @@
     "native/windows/build/manifest.json",
     "native/windows/build/rea-windows-x64.node",
     "scripts/verify-windows-native-artifact.mjs",
+    "bridge/lief/inspect.py",
+    "third_party/lief/README.md",
     "bridge/pwntools/layout.py",
     "bridge/pwntools/layout_impl.py",
     "third_party/pwntools/README.md",

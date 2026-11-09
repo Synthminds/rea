@@ -50,6 +50,8 @@ const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
     "compares retained inspection Evidence without executing modules",
   inspect_wasm_artifact:
     "WABT validates and decompiles the module without executing it",
+  inspect_with_lief:
+    "reads a private copy with operator-configured LIEF without executing the target",
   identify_flutter_build:
     "identifies the build through execution-free APK parsing",
   inspect_dart_aot: "inspects snapshot bytes without executing them",
