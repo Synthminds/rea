@@ -2,10 +2,7 @@ import { z } from "zod";
 
 import { artifactFileCancellationCause } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
-import {
-  AnalysisError,
-  type AnalysisCapturedOutput,
-} from "../domain/analysisErrorBase.js";
+import { AnalysisError } from "../domain/analysisErrorBase.js";
 import {
   AnalysisAccessDeniedError,
   AnalysisArtifactChangedError,
@@ -26,7 +23,11 @@ import type { ArtifactAnalysisResources } from "../process/ArtifactAnalysisResou
 import { OwnedCommandFailure } from "../process/OwnedCommand.js";
 import type { ProviderProcessSnapshot } from "../process/ProviderProcess.js";
 import { privateWorkspaceFailure } from "../process/privateWorkspaceFailure.js";
-import { LIEF_CONFIGURATION_KEY } from "./LiefReply.js";
+import {
+  LIEF_CONFIGURATION_KEY,
+  liefFailureOutput,
+  type LiefOutput,
+} from "./LiefReply.js";
 import {
   LIEF_CONFIGURATION_GUIDANCE,
   LIEF_LIMITS,
@@ -40,6 +41,7 @@ export type LiefPhase =
   | "configuration"
   | "artifact"
   | "workspace"
+  | "copy"
   | "producer"
   | "integrity";
 
@@ -53,30 +55,79 @@ export interface LiefFailureContext {
   readonly python: string;
   readonly timeoutMs: number;
   readonly workspacePath: string | null;
-  readonly observedOutput: AnalysisCapturedOutput | undefined;
+  readonly observedOutput: LiefOutput | undefined;
   readonly resources: ArtifactAnalysisResources;
   readonly signal: AbortSignal | undefined;
 }
 
-/** Bounded diagnostics of one owned helper run. */
-export const outputOf = (
+/** Complete retained output of one owned helper run, with every stream's full size. */
+export const liefOutput = (
   snapshot: ProviderProcessSnapshot | null,
-): AnalysisCapturedOutput | undefined =>
+): LiefOutput | undefined =>
   snapshot === null
     ? undefined
     : {
-        stdout: snapshot.stdout.text,
-        stderr: snapshot.stderr.text,
+        stdout: {
+          text: snapshot.stdout.text,
+          bytes: snapshot.stdout.observedBytes,
+        },
+        stderr: {
+          text: snapshot.stderr.text,
+          bytes: snapshot.stderr.observedBytes,
+        },
         truncated: snapshot.diagnosticTruncated ?? false,
-        exit_code: snapshot.exitCode ?? null,
+        exitCode: snapshot.exitCode ?? null,
         signal: snapshot.signal ?? null,
       };
+
+/**
+ * The same command failure with each stream cut to its head and tail, so the
+ * shared classification cannot embed megabytes of file-controlled warnings.
+ */
+const boundedCommandFailure = (
+  cause: OwnedCommandFailure,
+): OwnedCommandFailure => {
+  const snapshot = cause.snapshot;
+  const bounded = liefFailureOutput(liefOutput(snapshot));
+  if (
+    snapshot === null ||
+    bounded === undefined ||
+    (bounded.stdout === snapshot.stdout.text &&
+      bounded.stderr === snapshot.stderr.text)
+  )
+    return cause;
+  return new OwnedCommandFailure(
+    cause.reason,
+    cause.message,
+    {
+      ...snapshot,
+      diagnosticTruncated: true,
+      stdout: { ...snapshot.stdout, text: bounded.stdout },
+      stderr: { ...snapshot.stderr, text: bounded.stderr },
+    },
+    cause.cleanupFailure,
+    {
+      cause,
+      cancellation: cause.cancellation,
+      processError: cause.processError,
+      ...(cause.cleanupResult === undefined
+        ? {}
+        : { cleanupResult: cause.cleanupResult }),
+      collectionFailure: cause.collectionFailure,
+      ...(cause.preparationFailure === undefined
+        ? {}
+        : { preparationFailure: cause.preparationFailure }),
+    },
+    cause.resources,
+    cause.cleanupOwner,
+  );
+};
 
 const commandFailure = (
   cause: OwnedCommandFailure,
   context: LiefFailureContext,
 ): AnalysisError => {
-  const capturedOutput = outputOf(cause.snapshot);
+  const capturedOutput = liefFailureOutput(liefOutput(cause.snapshot));
   const signal = cause.snapshot?.signal ?? null;
   if (cause.reason === "timeout")
     return new AnalysisTimeoutError(OPERATION, context.timeoutMs, {
@@ -105,7 +156,7 @@ const commandFailure = (
       },
     );
   return context.resources.commandFailure(
-    cause,
+    boundedCommandFailure(cause),
     {
       command_timeout_ms: context.timeoutMs,
       output_bytes: LIEF_LIMITS.diagnosticBytes,
@@ -185,8 +236,8 @@ const cancellationFailure = (
   cause: unknown,
   { signal, observedOutput }: LiefFailureContext,
 ): AnalysisError | undefined => {
-  const output =
-    observedOutput === undefined ? {} : { capturedOutput: observedOutput };
+  const capturedOutput = liefFailureOutput(observedOutput);
+  const output = capturedOutput === undefined ? {} : { capturedOutput };
   if (cause instanceof ArtifactReaderFailure && cause.reason === "cancelled")
     return new AnalysisCancelledError(OPERATION, {
       cause: artifactFileCancellationCause(cause),
@@ -213,15 +264,13 @@ export const liefFailure = (
   context: LiefFailureContext,
 ): AnalysisError => {
   if (cause instanceof AnalysisError) return cause;
-  const output =
-    context.observedOutput === undefined
-      ? {}
-      : { capturedOutput: context.observedOutput };
+  const capturedOutput = liefFailureOutput(context.observedOutput);
+  const output = capturedOutput === undefined ? {} : { capturedOutput };
   if (cause instanceof ArtifactReaderFailure && cause.cleanup !== undefined)
     return context.resources.cleanupFailure(
       cause,
       (primary) => liefFailure(primary, context),
-      context.observedOutput,
+      capturedOutput,
     );
   const cancelled = cancellationFailure(cause, context);
   if (cancelled !== undefined) return cancelled;
@@ -229,7 +278,11 @@ export const liefFailure = (
     return commandFailure(cause, context);
   if (context.phase === "configuration")
     return configurationFailure(cause, context);
-  if (context.phase === "workspace")
+  // A source that changes during the copy is the caller's file; a failed
+  // private-copy write (StableCopyDestinationFailure) is REA's workspace.
+  if (context.phase === "copy" && cause instanceof ArtifactReaderFailure)
+    return artifactFailure(cause, context);
+  if (context.phase === "workspace" || context.phase === "copy")
     return privateWorkspaceFailure(
       LIEF_PROVIDER_IDENTITY.id,
       OPERATION,

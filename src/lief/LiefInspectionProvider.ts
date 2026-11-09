@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, stat, writeFile } from "node:fs/promises";
+import { access, realpath, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,11 +11,11 @@ import {
 } from "../application/AnalysisProvider.js";
 import type { LiefInspectionPort } from "../application/lief/LiefInspectionPort.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
-import { readStableArtifact } from "../artifacts/readStableArtifact.js";
 import {
-  AnalysisError,
-  type AnalysisCapturedOutput,
-} from "../domain/analysisErrorBase.js";
+  digestStableArtifact,
+  readStableArtifact,
+} from "../artifacts/readStableArtifact.js";
+import { AnalysisError } from "../domain/analysisErrorBase.js";
 import {
   AnalysisCancelledError,
   AnalysisOutputError,
@@ -23,6 +23,7 @@ import {
 import { createEvidence } from "../domain/evidence.js";
 import {
   DEFAULT_LIEF_COMMAND_TIMEOUT_MS,
+  DEFAULT_LIEF_PAGE_ROWS,
   type InspectWithLiefInput,
   type LiefInspection,
 } from "../domain/lief/liefInspection.js";
@@ -32,15 +33,12 @@ import {
   type ArtifactAnalysisRuntime,
 } from "../process/ArtifactAnalysisResources.js";
 import { readLinuxResourceLimits } from "../process/LinuxResourceLimits.js";
-import {
-  OwnedCommandFailure,
-  runOwnedCommand,
-} from "../process/OwnedCommand.js";
+import { runOwnedCommand } from "../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import {
   LiefConfigurationError,
   liefFailure,
-  outputOf,
+  liefOutput,
   type LiefPhase,
 } from "./LiefFailures.js";
 import {
@@ -51,13 +49,24 @@ import {
 } from "./LiefRelease.js";
 import {
   LIEF_CONFIGURATION_KEY,
+  liefFailureOutput,
+  liefPageLimit,
   liefRefusal,
   liefReplySchema,
   liefReport,
+  type LiefInterpreter,
   type LiefObservedRun,
+  type LiefOutput,
 } from "./LiefReply.js";
 
 const OPERATION = "inspect_with_lief";
+const EMPTY_OUTPUT: LiefOutput = {
+  stdout: { text: "", bytes: 0 },
+  stderr: { text: "", bytes: 0 },
+  truncated: false,
+  exitCode: null,
+  signal: null,
+};
 const PRIVATE_COPY_CHANGED =
   "The LIEF helper changed REA's private read-only copy of the selected bytes; its observations are not reported. The selected file itself was not given to the helper.";
 
@@ -70,6 +79,9 @@ export interface LiefProviderSeams {
   readonly platform?: NodeJS.Platform;
   readonly arch?: string;
   readonly bridge?: URL;
+  /** Owned stable reads and digests, wrapped to place lifecycle interleavings. */
+  readonly readArtifact?: typeof readStableArtifact;
+  readonly digestArtifact?: typeof digestStableArtifact;
 }
 
 /** Mutable facts of one inspection, read by failure classification. */
@@ -78,7 +90,7 @@ interface LiefRun {
   readonly timeoutMs: number;
   phase: LiefPhase;
   root: ArtifactAnalysisRuntime | undefined;
-  capturedOutput: AnalysisCapturedOutput | undefined;
+  output: LiefOutput | undefined;
 }
 
 /**
@@ -88,7 +100,9 @@ interface LiefRun {
  */
 export class LiefInspectionProvider implements LiefInspectionPort {
   readonly #resources: ArtifactAnalysisResources;
-  readonly #seams: Required<Omit<LiefProviderSeams, "launcher">> &
+  readonly #seams: Required<
+    Omit<LiefProviderSeams, "launcher" | "readArtifact" | "digestArtifact">
+  > &
     Pick<LiefProviderSeams, "launcher">;
 
   constructor(
@@ -109,13 +123,14 @@ export class LiefInspectionProvider implements LiefInspectionPort {
     this.#resources = new ArtifactAnalysisResources(
       LIEF_PROVIDER_IDENTITY.id,
       OPERATION,
-      readStableArtifact,
+      seams.readArtifact ?? readStableArtifact,
       readLinuxResourceLimits,
       {
         message:
           "A LIEF inspection is already running in this REA process; retry after it completes.",
         details: { max_concurrent_inspections: 1 },
       },
+      seams.digestArtifact ?? digestStableArtifact,
     );
   }
 
@@ -146,7 +161,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       timeoutMs,
       phase: "configuration",
       root: undefined,
-      capturedOutput: undefined,
+      output: undefined,
     };
     let result: Result<AnalysisExecution, AnalysisError>;
     try {
@@ -175,12 +190,6 @@ export class LiefInspectionProvider implements LiefInspectionPort {
         ),
       );
     } catch (cause: unknown) {
-      if (
-        run.root !== undefined &&
-        cause instanceof OwnedCommandFailure &&
-        cause.cleanupOwner !== undefined
-      )
-        this.#resources.retain(run.root, cause.cleanupOwner);
       result = err(
         liefFailure(cause, {
           phase: run.phase,
@@ -188,7 +197,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
           python,
           timeoutMs,
           workspacePath: run.root?.path ?? null,
-          observedOutput: run.capturedOutput,
+          observedOutput: run.output,
           resources: this.#resources,
           signal,
         }),
@@ -226,6 +235,34 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       );
   }
 
+  /** Resolve and digest the interpreter REA launches, so a mid-run change is detected. */
+  async #interpreter(
+    python: string,
+    signal: AbortSignal | undefined,
+  ): Promise<LiefInterpreter> {
+    const path = await realpath(python);
+    try {
+      const { sha256 } = await this.#resources.digest(
+        path,
+        LIEF_LIMITS.toolBytes,
+        signal,
+      );
+      return { configured: python, path, sha256 };
+    } catch (cause: unknown) {
+      // Cancellation and descriptor cleanup keep their typed outcome.
+      if (
+        signal?.aborted === true ||
+        (cause instanceof ArtifactReaderFailure &&
+          (cause.cleanup !== undefined || cause.reason === "cancelled"))
+      )
+        throw cause;
+      throw new LiefConfigurationError(
+        `${LIEF_CONFIGURATION_KEY} resolves to ${path}, which REA could not digest to identify the interpreter: ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    }
+  }
+
   async #observe(
     input: InspectWithLiefInput,
     run: LiefRun,
@@ -236,25 +273,25 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       throw new AnalysisCancelledError(OPERATION, { cause: signal.reason });
     await this.#resources.release();
     await this.#configuredPython(python);
+    const interpreter = await this.#interpreter(python, signal);
 
     run.phase = "artifact";
-    const selected = await this.#resources.read(
+    // A streamed digest fixes the selected bytes; the copy must reproduce it,
+    // so REA never holds the artifact in memory.
+    const before = await this.#resources.digest(
       input.path,
       input.max_file_bytes,
       signal,
     );
-    const before = { sha256: selected.sha256, bytes: selected.bytes.length };
 
     run.phase = "workspace";
-    const { root, paths } = await this.#stage(
-      input,
-      selected.bytes,
-      run,
-      signal,
-    );
+    const { root, paths } = await this.#stage(input, run);
+
+    run.phase = "copy";
+    await this.#resources.copy(input.path, paths.snapshot, before, signal);
 
     run.phase = "producer";
-    const output = await runOwnedCommand(
+    const snapshot = await runOwnedCommand(
       {
         command: python,
         // Isolated mode ignores PYTHON* variables, user site-packages and the
@@ -266,10 +303,14 @@ export class LiefInspectionProvider implements LiefInspectionPort {
           paths.request,
         ],
         cwd: root.path,
-        // An interpreter shim may exec the real Python; keep group/run-token proof.
+        // A virtual environment's python is a symlink and a shim may exec
+        // another file, so the command path proves nothing; ownership is the
+        // process group plus the run token, which also reaches descendants
+        // that leave the group (setsid).
         expectedCommand: null,
         runId: `rea-lief-${randomUUID()}`,
         hostEnvironment: this.environment,
+        sweepTokenOwnedProcesses: true,
       },
       { timeoutMs, diagnosticBytes: LIEF_LIMITS.diagnosticBytes },
       {
@@ -277,14 +318,13 @@ export class LiefInspectionProvider implements LiefInspectionPort {
         ...(this.#seams.launcher === undefined
           ? {}
           : { launcher: this.#seams.launcher }),
+        // Unconfirmed process cleanup after a completed run keeps the reply;
+        // the root retains the supervisor and finish() reports cleanup_incomplete.
+        retainCleanup: (owner) => this.#resources.retain(root, owner),
       },
     );
-    const diagnostics = outputOf(output) ?? {
-      stdout: "",
-      stderr: "",
-      truncated: false,
-    };
-    run.capturedOutput = diagnostics;
+    const output = liefOutput(snapshot) ?? EMPTY_OUTPUT;
+    run.output = output;
 
     run.phase = "integrity";
     const copy = await this.#resources.digest(
@@ -294,7 +334,7 @@ export class LiefInspectionProvider implements LiefInspectionPort {
     );
     if (copy.sha256 !== before.sha256)
       throw new AnalysisOutputError(OPERATION, PRIVATE_COPY_CHANGED, {
-        capturedOutput: diagnostics,
+        capturedOutput: liefFailureOutput(output),
         userMessage: PRIVATE_COPY_CHANGED,
       });
 
@@ -307,22 +347,73 @@ export class LiefInspectionProvider implements LiefInspectionPort {
     const reply = liefReplySchema.parse(
       JSON.parse(replyFile.bytes.toString("utf8")),
     );
-    if (!reply.ok) throw liefRefusal(reply, input, python, diagnostics);
+    if (!reply.ok) throw liefRefusal(reply, input, python, output);
 
     run.phase = "integrity";
+    await this.#unchanged(
+      [
+        {
+          label: "configured Python interpreter",
+          path: interpreter.path,
+          sha256: interpreter.sha256,
+        },
+        { label: "native LIEF module", ...reply.value.native_module },
+      ],
+      output,
+      signal,
+    );
     const after = await this.#digestAfter(input, signal);
     return liefReport(
-      { input, python, before, after, diagnostics },
+      { input, python: interpreter, before, after, output },
       reply.value,
     );
   }
 
-  /** Stage a private read-only copy and request; the helper never sees input.path. */
+  /** The code that produced the reply must be the code identified before the run. */
+  async #unchanged(
+    files: readonly {
+      readonly label: string;
+      readonly path: string;
+      readonly sha256: string;
+    }[],
+    output: LiefOutput,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    for (const file of files) {
+      const changed = (detail: string) => {
+        const message = `The ${file.label} changed during the LIEF run, so the code that produced this reply is unknown: ${file.path} (${detail}).`;
+        return new AnalysisOutputError(OPERATION, message, {
+          capturedOutput: liefFailureOutput(output),
+          userMessage: message,
+          remediationAction:
+            "Keep the configured Python and its LIEF installation unchanged while REA runs, then repeat the call.",
+        });
+      };
+      if (!isAbsolute(file.path)) throw changed("the path is not absolute");
+      let sha256: string;
+      try {
+        ({ sha256 } = await this.#resources.digest(
+          file.path,
+          LIEF_LIMITS.toolBytes,
+          signal,
+        ));
+      } catch (cause: unknown) {
+        if (
+          signal?.aborted === true ||
+          (cause instanceof ArtifactReaderFailure &&
+            (cause.cleanup !== undefined || cause.reason === "cancelled"))
+        )
+          throw cause;
+        throw changed(cause instanceof Error ? cause.message : String(cause));
+      }
+      if (sha256 !== file.sha256) throw changed(`SHA-256 is now ${sha256}`);
+    }
+  }
+
+  /** Create the private root and request; the helper never sees input.path. */
   async #stage(
     input: InspectWithLiefInput,
-    bytes: Buffer,
     run: LiefRun,
-    signal: AbortSignal | undefined,
   ): Promise<{
     readonly root: ArtifactAnalysisRuntime;
     readonly paths: Readonly<Record<"snapshot" | "request" | "reply", string>>;
@@ -335,11 +426,6 @@ export class LiefInspectionProvider implements LiefInspectionPort {
       request: join(root.path, "request.json"),
       reply: join(root.path, "reply.json"),
     };
-    await writeFile(paths.snapshot, bytes, {
-      flag: "wx",
-      mode: 0o400,
-      ...(signal === undefined ? {} : { signal }),
-    });
     await writeFile(
       paths.request,
       JSON.stringify({
@@ -347,11 +433,13 @@ export class LiefInspectionProvider implements LiefInspectionPort {
         reply_path: paths.reply,
         operation: input.operation,
         offset: input.offset ?? 0,
-        limit: input.limit ?? null,
+        limit: input.operation === "summary" ? null : liefPageLimit(input),
         macho_slice: input.macho_slice ?? null,
         admitted_release: LIEF_ADMITTED_RELEASE,
         output_bytes: LIEF_LIMITS.replyBytes,
         address_space_bytes: LIEF_LIMITS.addressSpaceBytes,
+        summary_rows: DEFAULT_LIEF_PAGE_ROWS,
+        message_bytes: LIEF_LIMITS.messageBytes,
       }),
       { flag: "wx", mode: 0o600 },
     );

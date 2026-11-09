@@ -27,12 +27,15 @@ export const registerLiefCommands = (
       operation: z
         .enum(LIEF_OPERATIONS)
         .optional()
-        .describe("summary (default), sections, segments, imports or exports"),
+        .describe(
+          "summary (default), sections, segments, imports, exports, libraries, rpaths or load_commands",
+        ),
     }),
     options: z.object({
       offset: fields.offset,
       limit: fields.limit,
       machoSlice: fields.macho_slice,
+      diagnostics: fields.diagnostics,
       maxFileBytes: fields.max_file_bytes,
       commandTimeoutMs: fields.command_timeout_ms,
     }),
@@ -58,6 +61,7 @@ export const registerLiefCommands = (
                     ? {}
                     : { macho_slice: options.machoSlice }),
                   max_file_bytes: options.maxFileBytes,
+                  diagnostics: options.diagnostics,
                   ...(options.commandTimeoutMs === undefined
                     ? {}
                     : { command_timeout_ms: options.commandTimeoutMs }),

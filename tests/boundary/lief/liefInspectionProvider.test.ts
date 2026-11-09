@@ -1,19 +1,28 @@
 import { createHash } from "node:crypto";
-import { access, writeFile } from "node:fs/promises";
+import { access, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { expect, it } from "vitest";
 
 import { LiefInspectionService } from "../../../src/application/lief/LiefInspectionService.js";
+import {
+  digestStableArtifact,
+  readStableArtifact,
+} from "../../../src/artifacts/readStableArtifact.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { liefInspectionSchema } from "../../../src/domain/lief/liefInspection.js";
 import { LiefInspectionProvider } from "../../../src/lief/LiefInspectionProvider.js";
+import { LIEF_LIMITS } from "../../../src/lief/LiefRelease.js";
+import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 const ELF = Buffer.from("7f454c4602010100", "hex");
+const sha256 = (bytes: Buffer | string) =>
+  createHash("sha256").update(bytes).digest("hex");
 
 const summary = {
   architecture: "X86_64",
@@ -22,7 +31,15 @@ const summary = {
   object_type: "EXECUTABLE",
   entrypoint: "0x1040",
   imagebase: "0x0",
-  counts: { sections: 3, segments: 2, imports: 1, exports: 0, libraries: 1 },
+  counts: {
+    sections: 3,
+    segments: 2,
+    imports: 1,
+    exports: 0,
+    libraries: 1,
+    rpaths: 0,
+    load_commands: null,
+  },
   libraries: ["libc.so.6"],
   elf: {
     file_type: "DYN",
@@ -38,8 +55,17 @@ const summary = {
   },
   pe: null,
   macho: null,
+  truncated_lists: [],
+  unread_fields: [],
 };
 
+const LIMITS = {
+  address_space_bytes: 4294967296,
+  file_size_bytes: 34603008,
+  core_file_bytes: 0,
+};
+
+/** A successful helper value; the producer adds the authored native module identity. */
 const value = (overrides: Record<string, unknown> = {}) => ({
   lief_version: "1.0.0-test",
   python_version: "3.13.0",
@@ -47,12 +73,15 @@ const value = (overrides: Record<string, unknown> = {}) => ({
   macho: null,
   summary,
   page: null,
-  resource_limits: {
-    address_space_bytes: 4294967296,
-    file_size_bytes: 34603008,
-    core_file_bytes: 0,
-  },
+  resource_limits: LIMITS,
   ...overrides,
+});
+
+const refusal = (fields: Record<string, unknown>) => ({
+  ok: false,
+  message_bytes: Buffer.byteLength(String(fields.message ?? "")),
+  resource_limits: LIMITS,
+  ...fields,
 });
 
 const row = (index: number) => ({
@@ -69,17 +98,25 @@ const row = (index: number) => ({
 /**
  * A producer speaking the helper's reply protocol in place of Python+LIEF.
  * `body` runs with `request` (the parsed request), `selected` (the original
- * path, which the real helper never receives) and `reply(value)` in scope.
+ * path, which the real helper never receives), `python` (the authored
+ * interpreter file REA digests), `native` (the authored native-module
+ * identity) and `reply(value)` in scope.
  */
 const producer = (body: string): string => `
 const fs = require("node:fs");
 const request = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const selected = process.argv[2];
-const reply = (value) => fs.writeFileSync(request.reply_path, JSON.stringify(value), { flag: "wx" });
+const native = { path: process.argv[3], sha256: process.argv[4] };
+const python = process.argv[5];
+const reply = (value) => {
+  if (value.ok === true && value.value.native_module === undefined) value.value.native_module = native;
+  fs.writeFileSync(request.reply_path, JSON.stringify(value), { flag: "wx" });
+};
 ${body}
 `;
 
 type RuntimeRoot = Awaited<ReturnType<typeof PrivateRuntimeRoot.create>>;
+type Spawned = Awaited<ReturnType<typeof spawnOwnedProviderProcess>>;
 
 const harness = async (
   body: string,
@@ -90,19 +127,34 @@ const harness = async (
       root: RuntimeRoot,
     ) => Pick<RuntimeRoot, "path" | "close">;
     readonly onSpawn?: (process: { readonly pid?: number | undefined }) => void;
+    /** Wrap the spawned process, for example to deny its group cleanup. */
+    readonly spawned?: (spawned: Spawned) => Spawned;
+    readonly readArtifact?: (
+      real: typeof readStableArtifact,
+    ) => typeof readStableArtifact;
+    readonly digestArtifact?: (
+      real: typeof digestStableArtifact,
+    ) => typeof digestStableArtifact;
   } = {},
 ) => {
   const directory = await createTestTempDirectory("rea-lief-provider-");
   const path = join(directory, "selected.elf");
   const bytes = Buffer.concat([ELF, Buffer.alloc(56, 1)]);
   await writeFile(path, bytes);
+  // Authored stand-ins REA digests: the configured interpreter and the native module.
+  const python = join(directory, "python");
+  await writeFile(python, "#!/bin/sh\nexit 97\n", { mode: 0o755 });
+  const native = join(directory, "_lief.so");
+  const nativeBytes = Buffer.from("authored native LIEF module stand-in");
+  await writeFile(native, nativeBytes);
   const observed: {
     cwd: string | undefined;
     arguments: readonly string[] | undefined;
+    sweep: boolean | undefined;
     roots: string[];
-  } = { cwd: undefined, arguments: undefined, roots: [] };
+  } = { cwd: undefined, arguments: undefined, sweep: undefined, roots: [] };
   const provider = new LiefInspectionProvider(
-    { REA_LIEF_PYTHON: process.execPath },
+    { REA_LIEF_PYTHON: python },
     {
       platform: options.platform ?? "linux",
       arch: "x64",
@@ -116,14 +168,29 @@ const harness = async (
       launcher: async (spawn) => {
         observed.cwd = spawn.cwd;
         observed.arguments = spawn.arguments;
+        observed.sweep = spawn.sweepTokenOwnedProcesses;
         const spawned = await spawnOwnedProviderProcess({
           ...spawn,
           command: process.execPath,
-          arguments: ["-e", producer(body), spawn.arguments.at(-1) ?? "", path],
+          arguments: [
+            "-e",
+            producer(body),
+            spawn.arguments.at(-1) ?? "",
+            path,
+            native,
+            sha256(nativeBytes),
+            python,
+          ],
         });
         options.onSpawn?.(spawned.process);
-        return spawned;
+        return options.spawned?.(spawned) ?? spawned;
       },
+      ...(options.readArtifact === undefined
+        ? {}
+        : { readArtifact: options.readArtifact(readStableArtifact) }),
+      ...(options.digestArtifact === undefined
+        ? {}
+        : { digestArtifact: options.digestArtifact(digestStableArtifact) }),
     },
   );
   const service = new LiefInspectionService(provider);
@@ -136,8 +203,11 @@ const harness = async (
     }
   };
   return {
+    directory,
     path,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    python,
+    native,
+    sha256: sha256(bytes),
     observed,
     service,
     provider,
@@ -156,11 +226,31 @@ const failure = async (
   return projectAnalysisError(result.error);
 };
 
+const reportOf = (
+  result: Awaited<ReturnType<LiefInspectionService["inspect"]>>,
+) => {
+  if (!result.ok) throw result.error;
+  return liefInspectionSchema.parse(
+    parseEvidence(result.value).normalized_result,
+  );
+};
+
+/** Group cleanup denied while `gate.deny` holds, then the real owned-group cleanup. */
+const deniedCleanup =
+  (gate: { deny: boolean }) =>
+  (spawned: Spawned): Spawned => ({
+    ...spawned,
+    cleanup: async () =>
+      gate.deny
+        ? { cleaned: false, reason: "authored group cleanup denial" }
+        : cleanupOwnedProcessGroup(spawned.ownership),
+  });
+
 // The controlled producer relies on POSIX process groups and file modes.
 const posix = it.runIf(process.platform !== "win32");
 
 posix(
-  "binds a summary to the private copy's identity and removes the copy",
+  "binds a summary to the private copy, interpreter and native module identities and removes the copy",
   async () => {
     const fixture = await harness(
       `process.stderr.write("LIEF warning\\n"); reply({ ok: true, value: ${JSON.stringify(value())} });`,
@@ -179,17 +269,38 @@ posix(
       artifact_after: { sha256: fixture.sha256, changed: false },
       operation: "summary",
       coverage: { applicable: true, parser_diagnostics: "reported" },
-      diagnostics: { stderr: "LIEF warning\n" },
+      diagnostics: {
+        detail: "summary",
+        stderr: {
+          bytes: 13,
+          lines: 1,
+          distinct_lines: 1,
+          sha256: sha256("LIEF warning\n"),
+          excerpt: [{ line: "LIEF warning", count: 1, truncated: false }],
+          excerpt_complete: true,
+          text: null,
+        },
+        capture_truncated: false,
+      },
       provider: {
         admitted_release: "1.0",
-        python_executable: process.execPath,
+        python_executable: fixture.python,
+        python: {
+          path: fixture.python,
+          sha256: sha256(await readFile(fixture.python)),
+        },
+        native_module: {
+          path: fixture.native,
+          sha256: sha256(await readFile(fixture.native)),
+        },
       },
     });
     expect(report.limitations.join("\n")).toContain(
       "never received the original path",
     );
-    expect(report.limitations.join("\n")).toContain("diagnostics.stderr");
-    // Isolated interpreter, packaged helper, and a request inside the private root.
+    expect(report.limitations.join("\n")).toContain("diagnostics: complete");
+    // Isolated interpreter, packaged helper, a request inside the private root,
+    // and a token sweep for descendants that leave the process group.
     expect(fixture.observed.arguments?.slice(0, 2)).toEqual(["-I", "-B"]);
     expect(fixture.observed.arguments?.[2]).toMatch(
       /bridge[\\/]lief[\\/]inspect\.py$/u,
@@ -197,35 +308,98 @@ posix(
     expect(fixture.observed.arguments?.[3]).toBe(
       join(fixture.observed.cwd ?? "", "request.json"),
     );
+    expect(fixture.observed.sweep).toBe(true);
     expect(await fixture.rootRemoved()).toBe(true);
   },
 );
 
 posix(
-  "pages list facets from the reported total and rejects inconsistent pages",
+  "summarizes repeated diagnostics within the excerpt budget and returns the complete text on request",
+  async () => {
+    // 3000 repeats of one warning plus 200 distinct, file-controlled lines.
+    const fixture = await harness(`
+      let text = "";
+      for (let index = 0; index < 3000; index++) text += "LIEF: repeated warning\\n";
+      for (let index = 0; index < 200; index++) text += "LIEF: section " + "x".repeat(40) + index + " is malformed\\n";
+      process.stderr.write(text, () => reply({ ok: true, value: { ...${JSON.stringify(value({ summary: null }))}, page: { applicable: true, total: 0, items: [] } } }));
+    `);
+    const summarized = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        operation: "sections",
+        limit: 1,
+      }),
+    );
+    const stderr = summarized.diagnostics.stderr;
+    expect(stderr).toMatchObject({
+      lines: 3200,
+      distinct_lines: 201,
+      excerpt_complete: false,
+      text: null,
+    });
+    expect(stderr.excerpt[0]).toEqual({
+      line: "LIEF: repeated warning",
+      count: 3000,
+      truncated: false,
+    });
+    expect(
+      stderr.excerpt.reduce(
+        (total, entry) => total + Buffer.byteLength(entry.line),
+        0,
+      ),
+    ).toBeLessThanOrEqual(LIEF_LIMITS.diagnosticExcerptBytes);
+    // The whole report stays small although stderr was about 80 KB.
+    expect(stderr.bytes).toBeGreaterThan(80_000);
+    expect(JSON.stringify(summarized).length).toBeLessThan(12_000);
+    const complete = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        operation: "sections",
+        limit: 1,
+        diagnostics: "complete",
+      }),
+    );
+    expect(complete.diagnostics.stderr.text).toHaveLength(stderr.bytes);
+    expect(sha256(complete.diagnostics.stderr.text ?? "")).toBe(stderr.sha256);
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "pages list facets with a default limit of 64 and rejects inconsistent pages",
   async () => {
     const fixture = await harness(`
-      const items = [1, 2, 3, 4, 5].map((index) => (${row.toString()})(index));
+      const items = Array.from({ length: 100 }, (_, index) => (${row.toString()})(index + 1));
       const window = request.limit === 9 ? items : items.slice(request.offset, request.offset + request.limit);
       reply({ ok: true, value: { ...${JSON.stringify(value({ summary: null }))}, page: { applicable: true, total: items.length, items: window } } });
     `);
-    const page = await fixture.service.inspect({
-      path: fixture.path,
-      operation: "imports",
+    const page = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        operation: "imports",
+        offset: 1,
+        limit: 2,
+      }),
+    );
+    expect(page.imports).toMatchObject({
       offset: 1,
       limit: 2,
-    });
-    if (!page.ok) throw page.error;
-    expect(
-      liefInspectionSchema.parse(parseEvidence(page.value).normalized_result)
-        .imports,
-    ).toMatchObject({
-      offset: 1,
-      limit: 2,
-      total: 5,
+      total: 100,
       returned: 2,
       next_offset: 3,
       items: [{ name: "symbol_2" }, { name: "symbol_3" }],
+    });
+    const defaulted = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        operation: "imports",
+      }),
+    );
+    expect(defaulted.imports).toMatchObject({
+      offset: 0,
+      limit: 64,
+      returned: 64,
+      next_offset: 64,
     });
     // A producer that ignores the window must not be reported as a page.
     expect(
@@ -238,6 +412,51 @@ posix(
         }),
       ),
     ).toMatchObject({ code: "unreadable_output" });
+  },
+);
+
+posix(
+  "returns non-UTF-8 names as exact bytes and pages the new library, rpath and load-command facets",
+  async () => {
+    const fixture = await harness(`
+      const rows = {
+        libraries: [{ name: { text: null, bytes_hex: "ff696273" }, kind: "NEEDED", current_version: null, compatibility_version: null }],
+        rpaths: [{ path: "$ORIGIN", kind: "RUNPATH" }],
+        load_commands: [],
+      }[request.operation];
+      reply({ ok: true, value: { ...${JSON.stringify(value({ summary: null }))}, page: { applicable: request.operation !== "load_commands", total: rows.length, items: rows } } });
+    `);
+    const libraries = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        operation: "libraries",
+      }),
+    );
+    expect(libraries.libraries?.items).toEqual([
+      {
+        name: { text: null, bytes_hex: "ff696273" },
+        kind: "NEEDED",
+        current_version: null,
+        compatibility_version: null,
+      },
+    ]);
+    expect(libraries.limitations.join("\n")).toContain("bytes_hex");
+    expect(
+      reportOf(
+        await fixture.service.inspect({
+          path: fixture.path,
+          operation: "rpaths",
+        }),
+      ).rpaths?.items,
+    ).toEqual([{ path: "$ORIGIN", kind: "RUNPATH" }]);
+    const commands = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        operation: "load_commands",
+      }),
+    );
+    expect(commands.coverage.applicable).toBe(false);
+    expect(commands.limitations.join("\n")).toContain("not applicable to ELF");
   },
 );
 
@@ -273,7 +492,32 @@ posix.each([
   ],
   [
     { reason: "output-limit", message: "too large", reply_bytes: 40000000 },
-    { code: "resource_constraint", retryable: false },
+    {
+      code: "resource_constraint",
+      retryable: false,
+      details: {
+        reported_limits: {
+          required_bytes: 40000000,
+          file_size_bytes: 34603008,
+        },
+      },
+    },
+  ],
+  [
+    {
+      reason: "resource-limit",
+      message: "memory",
+      resource_limits: { ...LIMITS, address_space_bytes: 1073741824 },
+    },
+    {
+      code: "resource_constraint",
+      details: {
+        reported_limits: {
+          address_space_bytes: 1073741824,
+          requested_address_space_bytes: 4294967296,
+        },
+      },
+    },
   ],
   [
     { reason: "malformed", message: "unreadable ELF class" },
@@ -297,20 +541,44 @@ posix.each([
         diagnostics: {
           stage: "lief-parse",
           reason: "AttributeError: no such field",
+          resource_limits: LIMITS,
         },
       },
     },
   ],
 ])(
   "projects the %o refusal without partial structure",
-  async (refusal, expected) => {
-    const fixture = await harness(
-      `reply(${JSON.stringify({ ok: false, ...refusal })});`,
+  async (fields, expected) => {
+    const fixture = await harness(`reply(${JSON.stringify(refusal(fields))});`);
+    const projected = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
     );
-    expect(
-      await failure(await fixture.service.inspect({ path: fixture.path })),
-    ).toMatchObject(expected);
+    expect(projected).toMatchObject(expected);
     expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "bounds a long refusal message to an excerpt that names its full size",
+  async () => {
+    const message = `ValueError: ${"é".repeat(30_000)}`;
+    const fixture = await harness(
+      `reply(${JSON.stringify(refusal({ reason: "decoder", message }))});`,
+    );
+    const projected = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    const reason = String(
+      (projected.details as { diagnostics: { reason: string } }).diagnostics
+        .reason,
+    );
+    expect(Buffer.byteLength(reason)).toBeLessThan(
+      LIEF_LIMITS.messageBytes + 100,
+    );
+    expect(reason).toContain(
+      `excerpt of a ${String(Buffer.byteLength(message))}-byte message`,
+    );
+    expect(projected.message.length).toBeLessThan(2_000);
   },
 );
 
@@ -327,6 +595,27 @@ posix(
     );
     expect(projected.code).toBe("unreadable_output");
     expect(projected.message).toContain("private read-only copy");
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix.each([
+  [
+    "configured Python interpreter",
+    `fs.appendFileSync(python, "# changed\\n");`,
+  ],
+  ["native LIEF module", `fs.appendFileSync(native.path, "changed");`],
+])(
+  "rejects a reply when the %s changes during the run",
+  async (label, change) => {
+    const fixture = await harness(
+      `${change} reply({ ok: true, value: ${JSON.stringify(value())} });`,
+    );
+    const projected = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    expect(projected.code).toBe("unreadable_output");
+    expect(projected.message).toContain(`The ${label} changed during`);
     expect(await fixture.rootRemoved()).toBe(true);
   },
 );
@@ -356,6 +645,22 @@ posix.each([
     `fs.writeFileSync(request.reply_path, "{");`,
     "reply could not be read",
   ],
+  [
+    "a nonzero exit without a signal",
+    `process.stderr.write("Traceback: authored failure\\n"); process.exit(3);`,
+    "Traceback: authored failure",
+  ],
+  ["exit 0 without a reply", `process.exit(0);`, "reply could not be read"],
+  [
+    "an oversized reply",
+    `fs.writeFileSync(request.reply_path, ""); fs.truncateSync(request.reply_path, ${String(LIEF_LIMITS.replyBytes + 1)});`,
+    "reply could not be read",
+  ],
+  [
+    "a symlinked reply",
+    `fs.writeFileSync(request.reply_path + ".real", JSON.stringify({ ok: true, value: ${JSON.stringify(value())} })); fs.symlinkSync(request.reply_path + ".real", request.reply_path);`,
+    "reply could not be read",
+  ],
 ])(
   "fails without partial success when the helper ends with %s",
   async (_case, body, message) => {
@@ -365,6 +670,41 @@ posix.each([
     );
     expect(projected.code).toBe("unreadable_output");
     expect(JSON.stringify(projected)).toContain(message);
+    expect(projected.details).not.toHaveProperty("partial_observation");
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "refuses diagnostics past the 4 MiB budget with a bounded excerpt and the stream's size",
+  async () => {
+    const fixture = await harness(`
+      const line = "LIEF warning: " + "w".repeat(1000) + "\\n";
+      let written = 0;
+      const pump = () => {
+        while (written < ${String(LIEF_LIMITS.diagnosticBytes + 1024 * 1024)}) {
+          written += line.length;
+          if (!process.stderr.write(line)) return process.stderr.once("drain", pump);
+        }
+        reply({ ok: true, value: ${JSON.stringify(value())} });
+      };
+      pump();
+    `);
+    const projected = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    expect(projected.code).toBe("resource_constraint");
+    const captured = (
+      projected.details as {
+        captured_output: { stderr: string; truncated: boolean };
+      }
+    ).captured_output;
+    expect(captured.truncated).toBe(true);
+    expect(Buffer.byteLength(captured.stderr)).toBeLessThan(
+      2 * LIEF_LIMITS.failureOutputBytes + 200,
+    );
+    expect(captured.stderr).toContain("REA omitted");
+    expect(JSON.stringify(projected).length).toBeLessThan(20_000);
     expect(await fixture.rootRemoved()).toBe(true);
   },
 );
@@ -373,26 +713,55 @@ posix(
   "returns typed cancellation once the helper is running and stops its process",
   async () => {
     const controller = new AbortController();
+    const reason = new Error("caller stopped");
     let pid: number | undefined;
     const fixture = await harness("setInterval(() => {}, 1000);", {
       // Abort only after the owned helper exists, so the run phase is covered.
       onSpawn: (child) => {
         pid = child.pid;
-        controller.abort(new Error("caller stopped"));
+        controller.abort(reason);
       },
     });
-    expect(
-      await failure(
-        await fixture.service.inspect(
-          { path: fixture.path },
-          { signal: controller.signal },
-        ),
-      ),
-    ).toMatchObject({ code: "cancelled" });
+    const result = await fixture.service.inspect(
+      { path: fixture.path },
+      { signal: controller.signal },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe(reason);
     expect(pid).toBeTypeOf("number");
     expect(() => process.kill(pid ?? 0, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
     );
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "returns typed cancellation when the caller aborts while REA reads the completed reply",
+  async () => {
+    const controller = new AbortController();
+    const reason = { authored: "cancel during result read" };
+    const fixture = await harness(
+      `process.stderr.write("LIEF warning\\n"); reply({ ok: true, value: ${JSON.stringify(value())} });`,
+      {
+        readArtifact:
+          (real) =>
+          (path, ...rest) => {
+            if (path.endsWith("reply.json")) controller.abort(reason);
+            return real(path, ...rest);
+          },
+      },
+    );
+    const result = await fixture.service.inspect(
+      { path: fixture.path },
+      { signal: controller.signal },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe(reason);
+    // The completed helper's output is retained on the typed cancellation.
+    expect(result.error.capturedOutput?.stderr).toBe("LIEF warning\n");
     expect(await fixture.rootRemoved()).toBe(true);
   },
 );
@@ -414,6 +783,72 @@ posix(
       ),
     );
     expect(projected).toMatchObject({ code: "cancelled" });
+    expect(fixture.observed.cwd).toBeUndefined();
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "returns typed cancellation with the caller's reason when the selected-file digest is cancelled",
+  async () => {
+    const controller = new AbortController();
+    const reason = { authored: "cancel during digest" };
+    const fixture = await harness("process.exit(9);", {
+      digestArtifact:
+        (real) =>
+        (path, ...rest) => {
+          if (path.endsWith("selected.elf")) controller.abort(reason);
+          return real(path, ...rest);
+        },
+    });
+    const result = await fixture.service.inspect(
+      { path: fixture.path },
+      { signal: controller.signal },
+    );
+    if (result.ok) throw new Error("Expected cancellation");
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe(reason);
+    expect(fixture.observed.cwd).toBeUndefined();
+    expect(fixture.observed.roots).toEqual([]);
+  },
+);
+
+posix.each([
+  [
+    "replaced with other bytes",
+    async (path: string) => {
+      await writeFile(`${path}.next`, Buffer.alloc(64, 7));
+      await rename(`${path}.next`, path);
+    },
+  ],
+  [
+    "replaced with a symlink to identical bytes",
+    async (path: string) => {
+      await writeFile(`${path}.target`, await readFile(path));
+      await rename(path, `${path}.moved`);
+      await symlink(`${path}.target`, path);
+    },
+  ],
+])(
+  "refuses a selected file %s between its digest and the private copy",
+  async (_case, replace) => {
+    let replaced = false;
+    const fixture = await harness("process.exit(9);", {
+      digestArtifact:
+        (real) =>
+        async (path, ...rest) => {
+          const digest = await real(path, ...rest);
+          if (path.endsWith("selected.elf") && !replaced) {
+            replaced = true;
+            await replace(path);
+          }
+          return digest;
+        },
+    });
+    const projected = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    expect(projected.code).toBe("artifact_changed");
     expect(fixture.observed.cwd).toBeUndefined();
     expect(await fixture.rootRemoved()).toBe(true);
   },
@@ -495,16 +930,110 @@ posix(
   },
 );
 
+posix(
+  "keeps the completed reply with cleanup_incomplete when process-group cleanup fails after exit 0",
+  async () => {
+    const gate = { deny: true };
+    const fixture = await harness(
+      `reply({ ok: true, value: ${JSON.stringify(value())} });`,
+      // Denied after the run and again on the finalization retry.
+      { spawned: deniedCleanup(gate) },
+    );
+    const first = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    const [retained] = fixture.observed.roots;
+    expect(first).toMatchObject({
+      code: "cleanup_incomplete",
+      details: {
+        cleanup: "incomplete",
+        resources: expect.arrayContaining([retained]),
+        partial_observation: {
+          normalized_result: {
+            operation: "summary",
+            artifact: { sha256: fixture.sha256 },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(first)).toContain("authored group cleanup denial");
+    expect(await fixture.exists(retained ?? "")).toBe(true);
+    // The retained owner is retried before the next call is admitted.
+    gate.deny = false;
+    reportOf(await fixture.service.inspect({ path: fixture.path }));
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix(
+  "keeps the primary failure and retains the process group when its cleanup fails after a failed run",
+  async () => {
+    const gate = { deny: true };
+    const fixture = await harness(
+      `process.stderr.write("Traceback: authored primary\\n"); process.exit(3);`,
+      { spawned: deniedCleanup(gate) },
+    );
+    const first = await failure(
+      await fixture.service.inspect({ path: fixture.path }),
+    );
+    const [retained] = fixture.observed.roots;
+    // The primary unreadable-output failure and its diagnostics stay primary.
+    expect(first).toMatchObject({
+      code: "cleanup_incomplete",
+      message: expect.stringContaining("unreadable result"),
+      details: {
+        cleanup: "incomplete",
+        resources: expect.arrayContaining([retained]),
+        captured_output: {
+          stderr: "Traceback: authored primary\n",
+          exit_code: 3,
+        },
+      },
+    });
+    expect(await fixture.exists(retained ?? "")).toBe(true);
+    gate.deny = false;
+    await fixture.provider.close();
+    expect(await fixture.rootRemoved()).toBe(true);
+  },
+);
+
+posix("sweeps a setsid descendant that outlives a successful run", async () => {
+  const fixture = await harness(`
+      const { spawn } = require("node:child_process");
+      // detached starts a new session and process group; the run token stays in its environment.
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+      fs.writeFileSync(selected + ".pid", String(child.pid));
+      child.unref();
+      reply({ ok: true, value: ${JSON.stringify(value())} });
+    `);
+  reportOf(await fixture.service.inspect({ path: fixture.path }));
+  const pid = Number(await readFile(`${fixture.path}.pid`, "utf8"));
+  expect(Number.isSafeInteger(pid) && pid > 1).toBe(true);
+  let alive = true;
+  const deadline = Date.now() + 2_000;
+  while (alive && Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+      await delay(25);
+    } catch {
+      alive = false;
+    }
+  }
+  if (alive) process.kill(pid, "SIGKILL");
+  expect(alive).toBe(false);
+  expect(await fixture.rootRemoved()).toBe(true);
+});
+
 posix.each([
   [
     "grows past max_file_bytes",
     "fs.appendFileSync(selected, 'x');",
-    (sha256: string | null) => expect(sha256).toBeNull(),
+    (digest: string | null) => expect(digest).toBeNull(),
   ],
   [
     "is rewritten in place",
     "const bytes = fs.readFileSync(selected); bytes[9] ^= 0xff; fs.writeFileSync(selected, bytes);",
-    (sha256: string | null) => expect(sha256).toMatch(/^[0-9a-f]{64}$/u),
+    (digest: string | null) => expect(digest).toMatch(/^[0-9a-f]{64}$/u),
   ],
 ])(
   "reports a selected file that %s after the copy as changed",
@@ -512,13 +1041,11 @@ posix.each([
     const fixture = await harness(
       `${change} reply({ ok: true, value: ${JSON.stringify(value())} });`,
     );
-    const result = await fixture.service.inspect({
-      path: fixture.path,
-      max_file_bytes: 64,
-    });
-    if (!result.ok) throw result.error;
-    const report = liefInspectionSchema.parse(
-      parseEvidence(result.value).normalized_result,
+    const report = reportOf(
+      await fixture.service.inspect({
+        path: fixture.path,
+        max_file_bytes: 64,
+      }),
     );
     expect(report.artifact.sha256).toBe(fixture.sha256);
     expect(report.artifact_after.changed).toBe(true);
@@ -557,6 +1084,7 @@ posix(
     for (const input of [
       { path: fixture.path, offset: 1 },
       { path: fixture.path, operation: "imports", approval: true },
+      { path: fixture.path, diagnostics: "everything" },
       { path: "relative.elf" },
     ])
       expect(

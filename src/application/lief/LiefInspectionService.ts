@@ -55,11 +55,9 @@ export class LiefInspectionService {
         new AnalysisOutputError(
           OPERATION,
           "LIEF provider returned malformed evidence or changed the selected artifact identity or operation.",
-          report.success
-            ? { capturedOutput: report.data.diagnostics }
-            : undefined,
         ),
       );
+    // The Evidence carries the bounded diagnostics summary.
     return completeProviderEvidence(
       createAnalysisExecutionEvidence(
         OPERATION,
@@ -68,7 +66,6 @@ export class LiefInspectionService {
         "observed",
       ),
       options?.signal,
-      report.data.diagnostics,
     );
   }
 }

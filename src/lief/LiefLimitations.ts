@@ -1,4 +1,7 @@
-import type { LiefInspection } from "../domain/lief/liefInspection.js";
+import {
+  DEFAULT_LIEF_PAGE_ROWS,
+  type LiefInspection,
+} from "../domain/lief/liefInspection.js";
 import { LIEF_LIMITS } from "./LiefRelease.js";
 
 type Facet = LiefInspection["operation"];
@@ -9,10 +12,10 @@ const FACET_NOTES: Readonly<
   Partial<Record<Facet, Partial<Record<Format | "all", string>>>>
 > = {
   summary: {
-    all: "entrypoint is null when the header declares none (a zero ELF e_entry or PE AddressOfEntryPoint, or no Mach-O LC_MAIN/thread command). libraries are declared dependency names, not resolved runtime paths. imagebase is LIEF's linked base: PE ImageBase, the lowest ELF PT_LOAD address (null without PT_LOAD) or the Mach-O __TEXT address.",
-    pe: "signatures counts parsed Authenticode signatures only; signature validity, chain trust and timestamps were not verified. data_directories lists entries with a nonzero RVA or size; the certificate table's rva is a file offset.",
+    all: `entrypoint is null when the header declares none (a zero ELF e_entry or PE AddressOfEntryPoint, or no Mach-O LC_MAIN/thread command). libraries are declared dependency names, not resolved runtime paths. imagebase is LIEF's linked base: PE ImageBase, the lowest ELF PT_LOAD address (null without PT_LOAD) or the Mach-O __TEXT address.`,
+    pe: "signatures counts parsed Authenticode signatures only; signature validity, chain trust and timestamps were not verified. data_directories lists entries with a nonzero RVA or size; the certificate table's rva is a file offset. rich_header.entries beyond the summary bound are counted in entry_count and are not pageable in this release.",
     macho:
-      "code_signature locates the LC_CODE_SIGNATURE blob only; the signature was neither parsed nor verified. The summary libraries list omits LC_ID_DYLIB, which names the image itself; macho.libraries keeps every dylib command.",
+      "code_signature locates the LC_CODE_SIGNATURE blob only; the signature was neither parsed nor verified. libraries omits LC_ID_DYLIB, which names the image itself and is reported as macho.id_dylib; the libraries operation adds each dylib command and its versions.",
   },
   sections: {
     elf: "file_size is zero for SHT_NOBITS sections, which occupy no file bytes; virtual_size keeps the declared size.",
@@ -23,10 +26,29 @@ const FACET_NOTES: Readonly<
     pe: "PE images have no segment table; this facet is not applicable.",
   },
   imports: {
-    elf: "ELF imports are undefined dynamic symbols. ELF does not bind a symbol to one DT_NEEDED library, so library is null; the runtime linker resolves it.",
+    elf: "ELF imports are the undefined GLOBAL and WEAK symbols of .dynsym, including weak references such as __gmon_start__; .symtab is a link-time table and is not read. ELF does not bind a symbol to one DT_NEEDED library, so library is null; the runtime linker resolves it.",
     macho:
       "Mach-O import library comes from LIEF's bind information; it is null for flat-namespace or dynamic-lookup symbols.",
     pe: "PE import address is the IAT entry RVA; delay-load imports have no IAT address here. Bound-import timestamps are not reported.",
+  },
+  exports: {
+    elf: "ELF exports are the defined GLOBAL, WEAK and GNU_UNIQUE symbols of .dynsym with default or protected visibility; .symtab-only symbols such as main or _start are not exported.",
+  },
+  libraries: {
+    elf: "ELF libraries are DT_NEEDED entries in dynamic-table order; versions do not apply.",
+    pe: "PE libraries are import then delay-import DLL names; versions do not apply.",
+    macho:
+      "Mach-O libraries are dylib load commands other than LC_ID_DYLIB, with kind naming the command (for example LOAD_WEAK_DYLIB).",
+  },
+  rpaths: {
+    elf: "ELF rpaths split every DT_RPATH and DT_RUNPATH value on ':' in dynamic-table order; $ORIGIN and similar tokens are not expanded.",
+    macho:
+      "Mach-O rpaths are LC_RPATH paths in load-command order; @loader_path and similar tokens are not expanded.",
+    pe: "PE images have no rpath; this facet is not applicable.",
+  },
+  load_commands: {
+    elf: "Load commands are a Mach-O structure; this facet is not applicable to ELF.",
+    pe: "Load commands are a Mach-O structure; this facet is not applicable to PE.",
   },
 };
 
@@ -34,7 +56,21 @@ const identityNotes = (report: LiefInspection): string[] => {
   const notes: string[] = [];
   if (report.coverage.parser_diagnostics === "reported")
     notes.push(
-      "LIEF or Python wrote diagnostics to stderr (diagnostics.stderr); structures named there may be incomplete.",
+      report.diagnostics.detail === "complete"
+        ? "LIEF or Python wrote diagnostics to stderr (diagnostics.stderr.text); structures named there may be incomplete."
+        : "LIEF or Python wrote diagnostics to stderr; structures named there may be incomplete. diagnostics.stderr gives counts, the SHA-256 of the captured text and distinct lines up to 4 KiB; request diagnostics: complete for the full captured text.",
+    );
+  if (report.summary !== null && report.summary.truncated_lists.length > 0)
+    notes.push(
+      `Each summary list keeps at most ${String(DEFAULT_LIEF_PAGE_ROWS)} rows; truncated_lists names each cut list, its total and the operation that pages it.`,
+    );
+  if (report.summary !== null && report.summary.unread_fields.length > 0)
+    notes.push(
+      "LIEF could not read the fields in summary.unread_fields; their null values are unknown, not absent.",
+    );
+  if (JSON.stringify(report).includes('"bytes_hex"'))
+    notes.push(
+      "A {text: null, bytes_hex} value is a file string that is not valid UTF-8; bytes_hex is its exact bytes and no text rendering is implied.",
     );
   if (report.artifact_after.changed === true)
     notes.push(
@@ -66,8 +102,9 @@ export const liefLimitations = (report: LiefInspection): string[] => {
     ...(report.operation === "summary"
       ? []
       : [
-          "Each page call parses the file again. Row order is stable for the same artifact.sha256 and LIEF version; continue from next_offset and compare artifact.sha256 across pages.",
+          `Each page call parses the file again; limit defaults to ${String(DEFAULT_LIEF_PAGE_ROWS)} rows. Row order is stable for the same artifact.sha256 and LIEF version; continue from next_offset and compare artifact.sha256 across pages.`,
         ]),
+    "REA digested provider.python (the resolved interpreter) and provider.native_module (the loaded native LIEF module) before and after the run; other Python and LIEF files were not digested.",
     `Python soft limits applied to the helper: address space ${String(limits.address_space_bytes ?? "not applied")}, file size ${String(limits.file_size_bytes ?? "not applied")}, core files ${String(limits.core_file_bytes ?? "not applied")} bytes; inherited tighter limits are kept. Fixed budgets: ${String(LIEF_LIMITS.replyBytes)}-byte reply and ${String(LIEF_LIMITS.diagnosticBytes)}-byte diagnostics, with no runtime override.`,
   ];
 };

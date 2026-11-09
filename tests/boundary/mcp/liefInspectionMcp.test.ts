@@ -26,7 +26,12 @@ const report = liefInspectionSchema.parse({
     lief_version: "1.0.0-test",
     admitted_release: "1.0",
     python_executable: "/opt/lief/bin/python",
+    python: { path: "/usr/bin/python3.13", sha256: "b".repeat(64) },
     python_version: "3.13.0",
+    native_module: {
+      path: "/opt/lief/lib/python3.13/site-packages/lief/_lief.so",
+      sha256: "c".repeat(64),
+    },
   },
   operation: "summary",
   format: "pe",
@@ -43,9 +48,12 @@ const report = liefInspectionSchema.parse({
       segments: null,
       imports: 2,
       exports: 0,
-      libraries: 1,
+      libraries: 2,
+      rpaths: null,
+      load_commands: null,
     },
-    libraries: ["example.dll"],
+    // A DLL name that is not valid UTF-8 keeps its exact bytes.
+    libraries: ["example.dll", { text: null, bytes_hex: "ff41" }],
     elf: null,
     pe: {
       machine: "AMD64",
@@ -70,11 +78,16 @@ const report = liefInspectionSchema.parse({
       export_name: null,
     },
     macho: null,
+    truncated_lists: [],
+    unread_fields: [],
   },
   sections: null,
   segments: null,
   imports: null,
   exports: null,
+  libraries: null,
+  rpaths: null,
+  load_commands: null,
   coverage: {
     model: "lief-parsed",
     applicable: true,
@@ -85,7 +98,30 @@ const report = liefInspectionSchema.parse({
     file_size_bytes: 34603008,
     core_file_bytes: 0,
   },
-  diagnostics: { stdout: "", stderr: "", truncated: false },
+  diagnostics: {
+    detail: "summary",
+    stderr: {
+      bytes: 0,
+      lines: 0,
+      distinct_lines: 0,
+      sha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      excerpt: [],
+      excerpt_complete: true,
+      text: null,
+    },
+    stdout: {
+      bytes: 0,
+      lines: 0,
+      distinct_lines: 0,
+      sha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      excerpt: [],
+      excerpt_complete: true,
+      text: null,
+    },
+    capture_truncated: false,
+  },
   limitations: ["Test provider limitation."],
 });
 
@@ -145,6 +181,16 @@ it("advertises a closed read-only contract and records inline LIEF Evidence with
   expect(ajv.validate(inputSchema, { path: PATH, operation: "patch" })).toBe(
     false,
   );
+  expect(
+    ajv.validate(inputSchema, {
+      path: PATH,
+      operation: "load_commands",
+      diagnostics: "complete",
+    }),
+  ).toBe(true);
+  expect(
+    ajv.validate(inputSchema, { path: PATH, diagnostics: "everything" }),
+  ).toBe(false);
   expect(ajv.validate(inputSchema, { path: PATH, write: true })).toBe(false);
   expect(schemas.toolDefinition.annotations).toMatchObject({
     destructiveHint: false,
@@ -167,7 +213,12 @@ it("advertises a closed read-only contract and records inline LIEF Evidence with
     "observed",
   );
   expect(received).toEqual([
-    { path: PATH, operation: "summary", max_file_bytes: 268435456 },
+    {
+      path: PATH,
+      operation: "summary",
+      max_file_bytes: 268435456,
+      diagnostics: "summary",
+    },
   ]);
 
   const refused = await client.callTool({
@@ -176,7 +227,7 @@ it("advertises a closed read-only contract and records inline LIEF Evidence with
   });
   expect(refused.isError).toBe(true);
   expect(JSON.stringify(refused.content)).toContain(
-    "offset applies only to sections, segments, imports and exports",
+    "offset applies only to list operations, not summary",
   );
   expect(received).toHaveLength(1);
 });

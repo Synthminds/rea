@@ -19,6 +19,16 @@ export const LIEF_LIMITS = {
   replyBytes: 32 * 1024 * 1024,
   diagnosticBytes: 4 * 1024 * 1024,
   addressSpaceBytes: 4 * 1024 * 1024 * 1024,
+  /** Distinct diagnostic lines kept inline in a result; the digest covers the rest. */
+  diagnosticExcerptBytes: 4 * 1024,
+  /** Longest single diagnostic line kept in that excerpt. */
+  diagnosticLineBytes: 512,
+  /** Head and tail of each output stream kept in a typed failure. */
+  failureOutputBytes: 4 * 1024,
+  /** Excerpt of a helper refusal message; the full size is reported. */
+  messageBytes: 1024,
+  /** Largest interpreter or native LIEF module file REA digests. */
+  toolBytes: 256 * 1024 * 1024,
 } as const;
 
 /** Only Linux x64 has real verification of the helper's resource limits. */
