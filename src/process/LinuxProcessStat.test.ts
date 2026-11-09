@@ -33,6 +33,7 @@ it("parses command names containing parentheses and retains native relation fact
     pid: 42,
     startTime: "987654",
     lifecycle: "non-zombie",
+    kernelThread: false,
     parentPid: 17,
     processGroupId: 18,
     sessionId: 19,
@@ -87,9 +88,22 @@ it.each(["invalid", "-1", "4.1", "9007199254740992"])(
       pid: 42,
       startTime: "987654",
       lifecycle: undefined,
+      kernelThread: undefined,
       parentPid: 17,
       processGroupId: 18,
       sessionId: 19,
     });
   },
 );
+
+it("reports PF_KTHREAD from the task flags of the same record", () => {
+  // kthreadd and a kworker as procfs reported them on a Linux 6.18 host.
+  for (const flags of ["2129984", "69238880"])
+    expect(parseLinuxProcessStat(statRecord({ flags }))).toMatchObject({
+      lifecycle: "non-zombie",
+      kernelThread: true,
+    });
+  expect(
+    parseLinuxProcessStat(statRecord({ flags: "4194304" }))?.kernelThread,
+  ).toBe(false);
+});

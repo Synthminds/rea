@@ -376,7 +376,10 @@ a group that reappears after it was processed is revalidated once, a further
 reappearance stays unresolved, lineage publishes one row per PID, and lineage does not publish a
 verified empty descendant list while that row remains unexamined. A readable token with unavailable
 identity stays unresolved. Native UID facts, rather than an earlier process-table
-row, determine whether a token denial concerns another user. Darwin tests compile
+row, determine whether a token denial concerns another user. A kernel thread
+created after the launch baseline is skipped only when both native reads around
+its token read report PF_KTHREAD for the same generation; Linux refuses its
+environment with ESRCH, and a one-sided report stays unresolved. Darwin tests compile
 the helper and exercise snapshot growth, absence, lifecycle, and UID observations;
 controlled Linux procfs tests do not establish real Linux exit or PID-reuse behavior.
 
