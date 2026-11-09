@@ -9,10 +9,63 @@ import {
   realpath,
   rename,
   writeFile,
+  type FileHandle,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+
+/**
+ * Descriptor faults for one of REA's own stable reads. Inert until a test arms
+ * `matches`; earlier opens of the armed path (`skip`) and every other open pass
+ * through unchanged.
+ */
+const fault = vi.hoisted(() => ({
+  matches: undefined as ((path: string) => boolean) | undefined,
+  skip: 0,
+  onStat: undefined as (() => void) | undefined,
+  denyFirstClose: false,
+  handles: [] as FileHandle[],
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    open: async (...arguments_: Parameters<typeof original.open>) => {
+      const handle = await original.open(...arguments_);
+      if (fault.matches?.(String(arguments_[0])) !== true) return handle;
+      if (fault.skip > 0) {
+        fault.skip -= 1;
+        return handle;
+      }
+      fault.matches = undefined;
+      fault.handles.push(handle);
+      const { onStat, denyFirstClose } = fault;
+      if (onStat !== undefined) {
+        const stat = handle.stat.bind(handle) as (
+          options?: object,
+        ) => Promise<unknown>;
+        handle.stat = (async (options?: object) => {
+          onStat();
+          return stat(options);
+        }) as typeof handle.stat;
+      }
+      if (denyFirstClose) {
+        const close = handle.close.bind(handle);
+        let denied = false;
+        handle.close = async () => {
+          if (!denied) {
+            denied = true;
+            throw new Error("authored descriptor close denial");
+          }
+          await close();
+        };
+      }
+      return handle;
+    },
+  };
+});
 
 import { FileSignaturesService } from "../../../src/application/binaryDiagnostics/FileSignaturesService.js";
 import type { AnalysisError } from "../../../src/domain/analysisErrorBase.js";
@@ -34,12 +87,22 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
  * source-owned backend seam, REA_DIE_COMMAND); none is recorded DiE output.
  * Commands still run through the real util-linux prlimit and owned process
  * supervision, so SIGXFSZ, the CPU ceiling and the token sweep are real kernel
- * and process behavior. Simulated tools do not establish real DiE behavior.
+ * and process behavior. Descriptor faults on REA's own post-scan reads go
+ * through the `node:fs/promises` open seam above. Simulated tools do not
+ * establish real DiE behavior.
  */
 const supported =
   process.platform === "linux" &&
   process.arch === "x64" &&
   existsSync("/usr/bin/prlimit");
+
+beforeEach(() => {
+  fault.matches = undefined;
+  fault.skip = 0;
+  fault.onStat = undefined;
+  fault.denyFirstClose = false;
+  fault.handles = [];
+});
 
 const sha256 = (bytes: Buffer | string) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -479,6 +542,128 @@ describe.skipIf(!supported)("DiE integrity and process ownership", () => {
     expect(error.cause).toBe(reason);
     await expectReleased(run);
   });
+});
+
+/**
+ * REA's reads after the stand-in exits, in order, with the opens of the same
+ * path that tool selection or snapshot staging made before the scan.
+ */
+const POST_SCAN_READS = [
+  { read: "private snapshot", earlier: 0 },
+  { read: "configured DiE executable", earlier: 1 },
+  { read: "resource limiter", earlier: 1 },
+  { read: "die-python native scanner module", earlier: 0 },
+  { read: "selected file", earlier: 1 },
+] as const;
+
+/**
+ * Arm the fault for the post-scan open of one read and return its exact path.
+ * The snapshot path exists only once the provider created its runtime root.
+ */
+const armPostScanRead = async (
+  fixture: Fixture,
+  run: Run,
+  { read, earlier }: (typeof POST_SCAN_READS)[number],
+): Promise<() => string> => {
+  const known =
+    read === "configured DiE executable"
+      ? await realpath(join(fixture.root, "python"))
+      : read === "resource limiter"
+        ? await realpath("/usr/bin/prlimit")
+        : read === "die-python native scanner module"
+          ? fixture.module
+          : read === "selected file"
+            ? fixture.target
+            : undefined;
+  const path = () =>
+    known ?? join(run.runtimePaths[0] ?? "", "target", "sample.bin");
+  fault.skip = earlier;
+  fault.matches = (opened) => opened === path();
+  return path;
+};
+
+describe.skipIf(!supported)("DiE post-scan result reads", () => {
+  it.each(POST_SCAN_READS)(
+    "returns typed cancellation when the caller aborts while REA reads the $read",
+    async (entry) => {
+      const fixture = await createFixture();
+      const controller = new AbortController();
+      const reason = { authored: `cancel during ${entry.read} read` };
+      let launches = 0;
+      let launchesAtFault: number | undefined;
+      const run = createRun(
+        { REA_DIE_PYTHON: await fixture.tool(printReply(fixture)) },
+        {
+          launcher: launchAfter(async () => {
+            launches += 1;
+          }),
+        },
+      );
+      await armPostScanRead(fixture, run, entry);
+      fault.onStat = () => {
+        launchesAtFault = launches;
+        controller.abort(reason);
+      };
+      const error = failureOf(
+        await run.service.inspect(
+          { path: fixture.target },
+          { signal: controller.signal },
+        ),
+      );
+      // The only command is the scan, so the abort landed after it ran.
+      expect(launchesAtFault).toBe(1);
+      expect(fault.handles).toHaveLength(1);
+      expect(error).toMatchObject({
+        _tag: "AnalysisCancelledError",
+        cleanupIncomplete: false,
+      });
+      expect(error.cause).toBe(reason);
+      expect(fault.handles.every((handle) => handle.fd === -1)).toBe(true);
+      await expectReleased(run);
+    },
+  );
+
+  it.each(POST_SCAN_READS)(
+    "retains the $read descriptor whose post-scan close failed, then releases it on close",
+    async (entry) => {
+      const fixture = await createFixture();
+      let launches = 0;
+      let launchesAtFault: number | undefined;
+      const run = createRun(
+        { REA_DIE_PYTHON: await fixture.tool(printReply(fixture)) },
+        {
+          launcher: launchAfter(async () => {
+            launches += 1;
+          }),
+        },
+      );
+      const path = await armPostScanRead(fixture, run, entry);
+      fault.onStat = () => {
+        launchesAtFault = launches;
+      };
+      fault.denyFirstClose = true;
+      const error = failureOf(
+        await run.service.inspect({ path: fixture.target }),
+      );
+      expect(launchesAtFault).toBe(1);
+      expect(fault.handles).toHaveLength(1);
+      expect(error).toMatchObject({
+        cleanupIncomplete: true,
+        cleanupResources: [path()],
+      });
+      expect(projectAnalysisError(error)).toMatchObject({
+        code: "cleanup_incomplete",
+      });
+      expect(fault.handles[0]?.fd).not.toBe(-1);
+      await expectReleased(run);
+      await run.service.close();
+      expect(fault.handles[0]?.fd).toBe(-1);
+      expect(error).toMatchObject({
+        cleanupIncomplete: false,
+        cleanupResources: [],
+      });
+    },
+  );
 });
 
 describe.skipIf(!supported)("DiE runtime-root finalization", () => {

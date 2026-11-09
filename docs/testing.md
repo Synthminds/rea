@@ -1791,9 +1791,13 @@ exit, a malformed bridge reply, snapshot truncation, executable, limiter and
 native-module replacement through the launcher seam, `/proc/self/limits` read
 failure, a `setsid` descendant swept by run token, cancellation during the scan
 and during runtime-root removal, and root-removal failure with retry through
-`close()`. No real `diec` lane exists yet; `diec` is refused at selection, and
-its version gate, nonzero-exit mapping and output framing are exercised only
-through a source-owned backend seam with authored stand-ins.
+`close()`. A `node:fs/promises` open seam targets REA's reads after the scan
+exits (private snapshot, executable, limiter, native module and selected file):
+cancellation during each read returns typed cancellation with closed
+descriptors, and a failed close keeps that descriptor retained and reported
+until `close()` releases it. No real `diec` lane exists yet; `diec` is refused
+at selection, and its version gate, nonzero-exit mapping and output framing are
+exercised only through a source-owned backend seam with authored stand-ins.
 
 ### Offline EVM interface
 
