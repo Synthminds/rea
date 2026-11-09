@@ -1777,18 +1777,24 @@ MCP fixtures retain the pinned SDK defaults.
 `REA_LIEF_PYTHON` whose Python imports LIEF 1.0.x. REA installs nothing. When
 `clang` with `lld` and `llvm-lipo` are available, the lane also builds PE and
 universal Mach-O fixtures; otherwise it reports those formats as unverified.
-It compiles source-owned ELF executables and shared libraries, a PE DLL and
-importing EXE, and an arm64 dylib with a universal executable in private
-storage. It checks summaries, dependency names, runpath and soname, PE
-imports/exports and data directories, Mach-O slices, bound imports and the
-`LC_CODE_SIGNATURE` location, list paging, unsupported and out-of-range input,
-identical CLI/MCP Evidence IDs over stdio, unchanged fixture bytes, and an empty
-private temporary directory after every call. No fixture is executed. Pass an
+It compiles source-owned ELF executables and shared libraries (with `RUNPATH`
+and legacy `RPATH`), a PE DLL with normal, delay-loaded and forwarded links,
+and an arm64 dylib with a universal executable in private storage. A known
+rich header is written into one DLL's DOS stub. It checks summaries,
+dependency names, runpath, rpath and soname, PE imports, delay imports,
+exports, forwarders, data directories and the rich header, Mach-O slices,
+bound imports and the `LC_CODE_SIGNATURE` location, list paging, unsupported
+and out-of-range input, identical CLI/MCP Evidence IDs over stdio, unchanged
+fixture bytes, and an empty private temporary directory after the run. No
+fixture is executed. A signed PE is not part of the lane. Pass an
 installed package's `scripts/rea.mjs` as the first argument to verify a package.
 
 Source-owned boundary tests replace the interpreter with a controlled producer
-to cover refusals, a modified private copy, deadlines, signals, malformed
-replies, cancellation and configuration errors through the real owned process.
+to cover every helper refusal, a modified private copy, a selected file that
+changes after the copy, deadlines, signals, malformed replies, cancellation
+while staging, while the helper runs and during private-copy removal, failed
+removal with retry on the next call, and configuration errors through the real
+owned process.
 
 ### Offline EVM interface
 

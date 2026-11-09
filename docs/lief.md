@@ -21,8 +21,18 @@ export REA_LIEF_PYTHON=/absolute/lief-env/bin/python
 ```
 
 The helper admits LIEF 1.0.x and records the observed `lief.__version__` in
-Evidence. Real verification used LIEF 1.0.0 from PyPI on Linux x64. Other
-hosts report `unsupported_host` until they have their own verification.
+Evidence. Other hosts report `unsupported_host` until they have their own
+verification.
+
+Real verification used LIEF 1.0.0 from PyPI on Linux x64 with compiled
+fixtures (`npm run verify:lief`):
+
+| Format | Verified with real LIEF                                                                                                  | Not verified                                                |
+| ------ | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| ELF    | Executables and shared libraries: summary, interpreter, soname, `RUNPATH` and legacy `RPATH`, sections, imports, exports | Big-endian, 32-bit and relocatable objects                  |
+| PE     | PE32+ EXE and DLL: imports, delay imports, exports, forwarded exports, data directories, a rich header                   | A signed file (`signatures.present: true`), PE32, ARM64     |
+| Mach-O | arm64 and x86_64 slices in a universal file: slices, load commands, bound imports, exports, `LC_CODE_SIGNATURE` location | 32-bit slices, Apple-toolchain binaries, dyld shared caches |
+
 Set the variable in the MCP server's launch environment and restart the
 server; a shell export reaches only the next CLI call.
 
@@ -66,8 +76,11 @@ rea inspect-with-lief ./Application summary --macho-slice 1 --json
   those bytes to a private read-only file. The helper receives only that copy,
   never the original path. After the helper exits, REA verifies the copy is
   unchanged and digests the original again (`artifact_after`). A changed copy
-  fails the call; a changed original is reported, and the results still
-  describe `artifact.sha256`.
+  fails the call. A changed original is reported as `changed: true`, and the
+  results still describe `artifact.sha256`. Its `sha256` is null when the
+  changed file grew past `max_file_bytes`, vanished, or changed during that
+  digest; `changed` is null only when the file could not be read for another
+  reason.
 - Python runs isolated (`-I -B`) from the private directory, not from a target
   directory. The helper calls only LIEF parsers and accessors; it never calls
   LIEF's builder, writer or patching APIs. On Linux it lowers its soft limits to
