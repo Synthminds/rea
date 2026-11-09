@@ -89,8 +89,9 @@ const failureTags: Readonly<Record<Exclude<OutcomeMode, "success">, string>> = {
   invalid: "AnalysisInputError",
   "invalid-close": "AnalysisInputError",
   "invalid-close-failure": "ProviderAdapterError",
-  "snapshot-close-failure": "AnalysisOutputError",
-  "snapshot-read-failure-late-abort": "AnalysisOutputError",
+  // The held snapshot keeps its runtime, so root cleanup composes the primary.
+  "snapshot-close-failure": "ProviderAdapterError",
+  "snapshot-read-failure-late-abort": "ProviderAdapterError",
   timeout: "AnalysisTimeoutError",
   cancelled: "AnalysisCancelledError",
   "cancelled-close": "AnalysisCancelledError",
@@ -240,14 +241,7 @@ const assertModeOutcome = (
   else
     expect(result).toMatchObject({
       ok: false,
-      error: {
-        _tag:
-          process.platform === "win32" &&
-          (mode === "snapshot-close-failure" ||
-            mode === "snapshot-read-failure-late-abort")
-            ? "ProviderAdapterError"
-            : failureTags[mode],
-      },
+      error: { _tag: failureTags[mode] },
     });
   if (mode === "invalid" || mode === "invalid-close")
     expect(result).toMatchObject({
@@ -695,35 +689,31 @@ const assertSnapshotCleanupOutcome = async (
         cleanupResources:
           process.platform === "win32"
             ? expect.arrayContaining([join(runtimePath, "module.wasm")])
-            : [join(runtimePath, "module.wasm")],
+            : [join(runtimePath, "module.wasm"), runtimePath],
       },
     });
+    // The runtime containing the retained descriptor survives until retry.
+    await expect(access(runtimePath)).resolves.toBeUndefined();
   } finally {
     fileCloseFailure.failFirst = false;
     fileCloseFailure.failRead = undefined;
     await provider.close();
     fileCloseFailure.selectedPath = "";
   }
+  await expect(access(runtimePath)).rejects.toMatchObject({ code: "ENOENT" });
   expect(result).toMatchObject({
     error: { cleanupIncomplete: false, cleanupResources: [] },
   });
-  if (!result.ok && mode === "snapshot-read-failure-late-abort") {
-    if (process.platform === "win32")
-      expect(result.error).toMatchObject({
-        diagnostics: {
-          primary_error: {
-            details: {
-              reason: expect.stringContaining("Authored snapshot read failure"),
-            },
+  if (!result.ok && mode === "snapshot-read-failure-late-abort")
+    expect(result.error).toMatchObject({
+      diagnostics: {
+        primary_error: {
+          details: {
+            reason: expect.stringContaining("Authored snapshot read failure"),
           },
         },
-      });
-    else
-      expect(result.error).toMatchObject({
-        _tag: "AnalysisOutputError",
-        reason: expect.stringContaining("Authored snapshot read failure"),
-      });
-  }
+      },
+    });
 };
 
 const runOwnedArtifactOutcome = async (

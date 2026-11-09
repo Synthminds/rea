@@ -690,17 +690,22 @@ describe.skipIf(!supported)("DiE post-scan result reads", () => {
       );
       expect(launchesAtFault).toBe(1);
       expect(fault.handles).toHaveLength(1);
+      // A descriptor inside the private runtime keeps that runtime too.
+      const runtimePath = run.runtimePaths[0] ?? "";
+      const inRuntime = entry.read === "private snapshot";
       expect(error).toMatchObject({
         cleanupIncomplete: true,
-        cleanupResources: [path()],
+        cleanupResources: inRuntime ? [path(), runtimePath] : [path()],
       });
       expect(projectAnalysisError(error)).toMatchObject({
         code: "cleanup_incomplete",
       });
       expect(fault.handles[0]?.fd).not.toBe(-1);
-      await expectReleased(run);
+      if (inRuntime) await expect(access(runtimePath)).resolves.toBeUndefined();
+      else await expectReleased(run);
       await run.service.close();
       expect(fault.handles[0]?.fd).toBe(-1);
+      await expectReleased(run);
       expect(error).toMatchObject({
         cleanupIncomplete: false,
         cleanupResources: [],

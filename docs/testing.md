@@ -1799,7 +1799,8 @@ exits (private snapshot, executable, limiter, native module and selected file):
 cancellation during each read returns typed cancellation with closed
 descriptors and DiE's parsed detections as partial observation, naming the
 integrity reads not yet confirmed and leaving `artifact_after` unknown. A failed
-close keeps that descriptor retained and reported until `close()` releases it. No real `diec` lane exists yet; `diec` is refused
+close keeps that descriptor, and any runtime containing it, retained and
+reported until `close()` releases them. No real `diec` lane exists yet; `diec` is refused
 at selection, and its version gate, nonzero-exit mapping and output framing are
 exercised only through a source-owned backend seam with authored stand-ins.
 

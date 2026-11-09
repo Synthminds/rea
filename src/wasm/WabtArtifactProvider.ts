@@ -156,7 +156,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
         });
       }
       const root = await this.createRuntime();
-      runtime = new OwnedCommandRuntime(root, "WABT");
+      runtime = new OwnedCommandRuntime(root, "WABT", this.#resources);
       const snapshotPath = join(root.path, "module.wasm");
       let snapshotHash: string | undefined;
       const verifySnapshot = async () => {
@@ -452,7 +452,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
         commandTimeoutMs,
         ...(versionProbe === undefined ? {} : { versionProbe }),
       });
-      runtime?.retainCommandFailure(cause, failure, this.#resources);
+      runtime?.retainCommandFailure(cause, failure);
       result = err(
         failure instanceof AnalysisOutputError &&
           failure.capturedOutput === undefined &&

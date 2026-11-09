@@ -416,7 +416,7 @@ export class DieSignatureProvider implements FileSignaturesPort {
       );
       phase = "configuration";
       const root = await this.createRuntime();
-      runtime = new OwnedCommandRuntime(root, "DiE");
+      runtime = new OwnedCommandRuntime(root, "DiE", this.#resources);
       const limiterArguments = prlimitArgumentVector(limits, tool.path);
       const run = async (
         args: readonly string[],
@@ -623,7 +623,7 @@ export class DieSignatureProvider implements FileSignaturesPort {
       );
     } catch (cause: unknown) {
       const failure = dieFailure(cause, phase, input.path, timeoutMs);
-      runtime?.retainCommandFailure(cause, failure, this.#resources);
+      runtime?.retainCommandFailure(cause, failure);
       // Cancellation during a post-scan read keeps the detections DiE produced.
       const parsed =
         failure instanceof AnalysisCancelledError

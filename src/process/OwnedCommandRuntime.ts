@@ -1,3 +1,4 @@
+import { isAbsolute, relative, sep } from "node:path";
 import {
   AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
@@ -9,21 +10,40 @@ import type { PrivateRuntimeRoot } from "./PrivateRuntimeRoot.js";
 import type { ProviderProcessSupervisor } from "./ProviderProcess.js";
 import { OwnedCommandFailure } from "./OwnedCommand.js";
 
+/** Whether a cleanup label is an absolute path strictly inside `root`. */
+const isWithin = (root: string, resource: string): boolean => {
+  if (!isAbsolute(resource)) return false;
+  const path = relative(root, resource);
+  return (
+    path !== "" &&
+    path !== ".." &&
+    !path.startsWith(`..${sep}`) &&
+    !isAbsolute(path)
+  );
+};
+
 /**
- * A private runtime cannot be removed until every retained command has stopped.
- * `label` names the caller-supplied tool in cleanup diagnostics.
+ * A private runtime cannot be removed until every retained command has stopped
+ * and every descriptor `resources` retains inside it has closed. `label` names
+ * the caller-supplied tool in cleanup diagnostics.
  */
 export class OwnedCommandRuntime {
   readonly lease: AnalysisCleanupLease;
   readonly path: string;
+  readonly #resources: ArtifactResourceScope;
   readonly #commands = new Map<
     ProviderProcessSupervisor,
     AnalysisCleanupLease
   >();
   #unknownCommand: string | undefined;
 
-  constructor(root: Pick<PrivateRuntimeRoot, "path" | "close">, label: string) {
+  constructor(
+    root: Pick<PrivateRuntimeRoot, "path" | "close">,
+    label: string,
+    resources: ArtifactResourceScope,
+  ) {
     this.path = root.path;
+    this.#resources = resources;
     this.lease = new AnalysisCleanupLease(async () => {
       const pending = [...this.#commands.values()].filter(
         (lease) => !lease.released,
@@ -46,16 +66,22 @@ export class OwnedCommandRuntime {
             },
           },
         );
+      // Owners report their exact paths; a held child keeps its containing root.
+      const held = resources.cleanupResources.filter((resource) =>
+        isWithin(root.path, resource),
+      );
+      if (held.length > 0) {
+        const reason = `${label} runtime is kept until its retained contents close: ${held.join(", ")}`;
+        throw new ArtifactReaderFailure("unavailable", reason, {
+          cleanup: { reason, resources: [root.path] },
+        });
+      }
       await root.close();
     }, [root.path]);
   }
 
   /** Adopt only the supervisor supplied by the command boundary, never a PID or label. */
-  retainCommandFailure(
-    cause: unknown,
-    failure: AnalysisError,
-    resources: ArtifactResourceScope,
-  ): void {
+  retainCommandFailure(cause: unknown, failure: AnalysisError): void {
     if (
       !(cause instanceof OwnedCommandFailure) ||
       cause.cleanupFailure === null
@@ -76,7 +102,7 @@ export class OwnedCommandRuntime {
           });
       }, cause.resources);
       this.#commands.set(owner, lease);
-      resources.retain({
+      this.#resources.retain({
         kind: "lease",
         resource: cause.resources[0] ?? this.path,
         lease,

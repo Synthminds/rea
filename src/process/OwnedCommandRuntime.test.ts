@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { expect, it, vi } from "vitest";
-import { AnalysisCleanupLeaseGroup } from "../artifacts/AnalysisCleanupLease.js";
+import {
+  AnalysisCleanupLease,
+  AnalysisCleanupLeaseGroup,
+} from "../artifacts/AnalysisCleanupLease.js";
 import {
   ArtifactResourceScope,
   ArtifactResourceRetryFailure,
@@ -26,6 +31,7 @@ it("retries exact command owners before runtime removal and preserves mixed outc
   const runtime = new OwnedCommandRuntime(
     { path: "owned-runtime", close },
     "Tool",
+    resources,
   );
   const controls = [true, false].map((allowed, index) => {
     const process = Object.assign(new EventEmitter(), {
@@ -57,7 +63,7 @@ it("retries exact command owners before runtime removal and preserves mixed outc
       owner,
     );
     const error = commandFailure(cause);
-    runtime.retainCommandFailure(cause, error, resources);
+    runtime.retainCommandFailure(cause, error);
     return { owner, state, stop, error };
   });
   const rootError = new ProviderCleanupError(
@@ -115,6 +121,7 @@ it("keeps runtime removal unconfirmed when a failed command supplies no ownershi
   const runtime = new OwnedCommandRuntime(
     { path: "owned-runtime", close },
     "Tool",
+    new ArtifactResourceScope(),
   );
   const cause = new OwnedCommandFailure(
     "process",
@@ -122,14 +129,45 @@ it("keeps runtime removal unconfirmed when a failed command supplies no ownershi
     null,
     "no cleanup owner",
   );
-  runtime.retainCommandFailure(
-    cause,
-    commandFailure(cause),
-    new ArtifactResourceScope(),
-  );
+  runtime.retainCommandFailure(cause, commandFailure(cause));
   await expect(runtime.lease.release()).rejects.toThrow(
     "Tool commands must stop",
   );
   expect(runtime.lease.released).toBe(false);
   expect(close).not.toHaveBeenCalled();
+});
+
+it("keeps the runtime while a retained descriptor inside it remains owned", async () => {
+  const resources = new ArtifactResourceScope();
+  const close = vi.fn(async () => undefined);
+  const root = join(tmpdir(), "owned-runtime");
+  const runtime = new OwnedCommandRuntime(
+    { path: root, close },
+    "Tool",
+    resources,
+  );
+  const descriptor = (path: string) => {
+    const state = { open: true };
+    resources.retain({
+      kind: "lease",
+      resource: path,
+      lease: new AnalysisCleanupLease(async () => {
+        if (state.open) throw new Error("authored close denial");
+      }, [path]),
+    });
+    return state;
+  };
+  // A sibling sharing the root's name prefix is not inside the runtime.
+  descriptor(`${root}-sibling${sep}file`);
+  const inside = descriptor(join(root, "target", "file"));
+  const release = () =>
+    resources.release({ kind: "lease", resource: root, lease: runtime.lease });
+  await expect(release()).resolves.toMatchObject({
+    kind: "failed",
+    cause: { cleanup: { resources: [root] } },
+  });
+  expect(close).not.toHaveBeenCalled();
+  inside.open = false;
+  await expect(resources.retryCleanup()).rejects.toThrow(`${root}-sibling`);
+  expect(close).toHaveBeenCalledOnce();
 });
