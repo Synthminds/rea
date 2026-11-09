@@ -109,7 +109,7 @@ output error whose remediation names that ceiling, the OOM killer and other
 senders without choosing among them. A snapshot that changed during the scan
 is `artifact_changed`; a changed executable, limiter or scanner module is an
 output error. Errors carry at most 4 KiB of each output stream with the
-complete byte counts. Cancellation after DiE finishes returns typed
+complete byte counts. Cancellation during REA's post-scan reads returns typed
 cancellation whose partial observation keeps DiE's parsed detections with
 `artifact_after` unknown; its limitations name any snapshot, executable,
 limiter or module check REA had not yet confirmed, and such detections are
