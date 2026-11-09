@@ -177,6 +177,18 @@ The workflow reports note owners, types, descriptor hashes, and GNU build-id
 or ABI-tag fields when those descriptors match. A missing note table is
 observed absence of those declarations. See [ELF note tables](elf-notes.md).
 
+Inspect ELF, PE or Mach-O structure with a caller-supplied LIEF installation
+selected by `REA_LIEF_PYTHON`, without executing the file:
+
+```bash
+rea inspect-with-lief /absolute/path/to/program --json
+rea inspect-with-lief /absolute/path/to/library.dll exports --limit 200 --json
+```
+
+`summary` is the default operation; `sections`, `segments`, `imports` and
+`exports` return pages with `next_offset`. See
+[executable structure with LIEF](lief.md).
+
 Inspect a CPython 3.7–3.13 `.pyc` header and nested marshal code objects
 without executing bytecode or installing Python:
 
