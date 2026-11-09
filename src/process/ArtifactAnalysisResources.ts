@@ -8,7 +8,10 @@ import {
 } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
-import { readStableArtifact } from "../artifacts/readStableArtifact.js";
+import {
+  digestStableArtifact,
+  readStableArtifact,
+} from "../artifacts/readStableArtifact.js";
 import {
   AnalysisError,
   type AnalysisCapturedOutput,
@@ -67,6 +70,7 @@ export class ArtifactAnalysisResources {
       readonly message: string;
       readonly details: Readonly<Record<string, JsonValue>>;
     },
+    readonly digestArtifact: typeof digestStableArtifact = digestStableArtifact,
   ) {
     this.#artifacts = { scope: new ArtifactResourceScope(), operation };
   }
@@ -124,6 +128,17 @@ export class ArtifactAnalysisResources {
 
   read(path: string, maximumBytes: number, signal?: AbortSignal) {
     return this.readArtifact(
+      path,
+      maximumBytes,
+      signal,
+      undefined,
+      this.#artifacts.scope,
+    );
+  }
+
+  /** Owned stable digest that does not retain the file's bytes. */
+  digest(path: string, maximumBytes: number, signal?: AbortSignal) {
+    return this.digestArtifact(
       path,
       maximumBytes,
       signal,

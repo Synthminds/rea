@@ -9,7 +9,10 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { expect, it, onTestFinished } from "vitest";
-import { readStableArtifact } from "../../../src/artifacts/readStableArtifact.js";
+import {
+  digestStableArtifact,
+  readStableArtifact,
+} from "../../../src/artifacts/readStableArtifact.js";
 import {
   ArtifactFileCleanupFailure,
   ArtifactFileCancelled,
@@ -22,20 +25,26 @@ it("reads exact binary and empty bytes and rejects symlink/size/cancellation bou
   const root = await createTestTempDirectory("rea-stable-artifact-");
   const path = join(root, "source.bin");
   await writeFile(path, Buffer.from([0, 255, 254]));
-  expect((await readStableArtifact(path, 3)).bytes).toEqual(
-    Buffer.from([0, 255, 254]),
-  );
-  await expect(readStableArtifact(path, 2)).rejects.toMatchObject({
-    reason: "limit",
+  const read = await readStableArtifact(path, 3);
+  expect(read.bytes).toEqual(Buffer.from([0, 255, 254]));
+  // The digest path keeps the same boundaries without retaining the bytes.
+  expect(await digestStableArtifact(path, 3)).toEqual({
+    sha256: read.sha256,
+    bytes: 3,
   });
+  for (const reader of [readStableArtifact, digestStableArtifact])
+    await expect(reader(path, 2)).rejects.toMatchObject({
+      reason: "limit",
+    });
   await writeFile(path, "");
   expect((await readStableArtifact(path, 0)).bytes.length).toBe(0);
   const real = join(root, "original.bin");
   await rename(path, real);
   await symlink(real, path);
-  await expect(readStableArtifact(path, 3)).rejects.toMatchObject({
-    reason: "path",
-  });
+  for (const reader of [readStableArtifact, digestStableArtifact])
+    await expect(reader(path, 3)).rejects.toMatchObject({
+      reason: "path",
+    });
   const controller = new AbortController();
   controller.abort();
   await expect(
@@ -48,12 +57,15 @@ it("reads exact binary and empty bytes and rejects symlink/size/cancellation bou
 
 const checkChange = async (
   stage: "before-open" | "after-read" | "symlink-replacement",
+  reader:
+    | typeof readStableArtifact
+    | typeof digestStableArtifact = readStableArtifact,
 ): Promise<void> => {
   const root = await createTestTempDirectory("rea-stable-read-");
   const path = join(root, "selected");
   await writeFile(path, "original evidence");
   let inspected = 0;
-  const reading = readStableArtifact(path, 1024, undefined, {
+  const reading = reader(path, 1024, undefined, {
     async lstat(selected) {
       inspected++;
       if (stage === "after-read" && inspected === 2) await unlink(selected);
@@ -71,8 +83,11 @@ const checkChange = async (
 
 it.each(["before-open", "after-read"] as const)(
   "retains an actual post-validation %s change as integrity failure",
-  checkChange,
+  (stage) => checkChange(stage),
 );
+
+it("rejects an in-read change on the digest path", () =>
+  checkChange("after-read", digestStableArtifact));
 
 it.skipIf(process.platform === "win32")(
   "retains a post-validation symlink replacement as an integrity failure",
