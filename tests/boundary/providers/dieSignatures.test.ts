@@ -6,7 +6,11 @@ import { describe, expect, it } from "vitest";
 
 import { FileSignaturesService } from "../../../src/application/binaryDiagnostics/FileSignaturesService.js";
 import type { AnalysisError } from "../../../src/domain/analysisErrorBase.js";
-import { fileSignaturesSchema } from "../../../src/domain/native/fileSignatures.js";
+import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
+import {
+  fileSignaturesSchema,
+  type FileSignatureBackend,
+} from "../../../src/domain/native/fileSignatures.js";
 import { DieSignatureProvider } from "../../../src/native/die/DieSignatureProvider.js";
 import { peExportImage } from "../../fixtures/binaryDiagnostics/nativeExports.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
@@ -21,14 +25,26 @@ const realPython = process.env.REA_VERIFY_DIE_PYTHON ?? "";
 const verifiedHost = process.platform === "linux" && process.arch === "x64";
 const realDie = verifiedHost && isAbsolute(realPython);
 
-const service = (environment: NodeJS.ProcessEnv) =>
-  new FileSignaturesService(new DieSignatureProvider(environment));
+const service = (
+  environment: NodeJS.ProcessEnv,
+  backends?: readonly FileSignatureBackend[],
+) =>
+  new FileSignaturesService(
+    new DieSignatureProvider(
+      environment,
+      undefined,
+      undefined,
+      undefined,
+      backends,
+    ),
+  );
 
 const failure = async (
   environment: NodeJS.ProcessEnv,
   input: Record<string, unknown>,
+  backends?: readonly FileSignatureBackend[],
 ): Promise<AnalysisError> => {
-  const inspector = service(environment);
+  const inspector = service(environment, backends);
   try {
     const result = await inspector.inspect(input);
     if (result.ok) throw new Error("Expected a typed DiE failure.");
@@ -75,6 +91,20 @@ describe.skipIf(!realDie)("real die-python 0.5.0", () => {
       resource_limits: { file_bytes: 0 },
     });
     expect(report.tool_profile.database.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    // The loaded scanner module and the limiter are digested and recorded.
+    expect(report.tool_profile.native_module?.path).toMatch(
+      /\/die\/_die\.[^/]+\.so$/u,
+    );
+    expect(report.tool_profile.native_module?.sha256).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(report.tool_profile.resource_limiter).toMatchObject({
+      configured_path: "/usr/bin/prlimit",
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(report.tool_profile.resource_limiter.arguments.at(-1)).toBe(
+      realPython,
+    );
     expect(report.file_parts[0]).toMatchObject({
       parent: null,
       file_type: "ELF64",
@@ -167,15 +197,49 @@ describe.skipIf(!verifiedHost)("DiE configuration and file admission", () => {
       { path: "/bin/true" },
     );
     expect(error._tag).toBe("AnalysisCapabilityUnavailableError");
-    expect(error.message).toContain("REA_DIE_COMMAND or REA_DIE_PYTHON");
+    expect(error.message).toContain("set REA_DIE_PYTHON");
   });
 
   it("requires absolute tool paths", async () => {
     const error = await failure(
-      { REA_DIE_COMMAND: "diec" },
+      { REA_DIE_PYTHON: "python3" },
       { path: "/bin/true" },
     );
-    expect(error.message).toContain("REA_DIE_COMMAND must be an absolute");
+    expect(error.message).toContain("REA_DIE_PYTHON must be an absolute");
+  });
+
+  it("refuses REA_DIE_COMMAND as an unverified backend before touching it", async () => {
+    const root = await createTestTempDirectory("rea-die-unverified-");
+    const missing = join(root, "missing-diec");
+    const inspector = new FileSignaturesService(
+      new DieSignatureProvider(
+        { REA_DIE_COMMAND: missing, REA_DIE_PYTHON: realPython || missing },
+        () => {
+          throw new Error("An unverified backend must not launch.");
+        },
+        () => {
+          throw new Error("An unverified backend must not allocate.");
+        },
+      ),
+    );
+    try {
+      const result = await inspector.inspect({ path: "/bin/true" });
+      if (result.ok) throw new Error("Expected the diec backend refusal.");
+      expect(result.error).toMatchObject({
+        _tag: "AnalysisCapabilityUnavailableError",
+        diagnostics: {
+          configuration_key: "REA_DIE_COMMAND",
+          executable_path: missing,
+          admitted_backends: "die-python",
+        },
+      });
+      expect(result.error.message).toContain("unverified DiE backend");
+      expect(projectAnalysisError(result.error).remediation.action).toContain(
+        "leave REA_DIE_COMMAND unset",
+      );
+    } finally {
+      await inspector.close();
+    }
   });
 
   it("refuses an unadmitted diec version banner", async () => {
@@ -189,6 +253,7 @@ describe.skipIf(!verifiedHost)("DiE configuration and file admission", () => {
     const error = await failure(
       { PATH: process.env.PATH, REA_DIE_COMMAND: diec },
       { path: "/bin/true" },
+      ["diec", "die-python"],
     );
     expect(error._tag).toBe("AnalysisCapabilityUnavailableError");
     expect(error.message).toContain("Unsupported diec version banner");

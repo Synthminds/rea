@@ -352,11 +352,12 @@ const installSessionToolAvailability = (
         isAbsolute(environment.REA_BROWSER_EXECUTABLE ?? ""),
       recordedCrashEnabled: options.recordedCrash !== undefined || pwntools,
       binaryLayoutEnabled: options.binaryLayout !== undefined || pwntools,
+      // diec is unverified: REA_DIE_COMMAND wins selection and is refused.
       fileSignaturesEnabled:
         options.fileSignatures !== undefined ||
         (verifiedHost.fileSignatures &&
-          (isAbsolute(environment.REA_DIE_COMMAND ?? "") ||
-            isAbsolute(environment.REA_DIE_PYTHON ?? ""))),
+          (environment.REA_DIE_COMMAND ?? "") === "" &&
+          isAbsolute(environment.REA_DIE_PYTHON ?? "")),
       firmwareInspectionEnabled:
         options.firmwareAnalysis !== undefined ||
         (verifiedHost.firmware &&

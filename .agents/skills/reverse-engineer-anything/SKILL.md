@@ -232,7 +232,7 @@ explicit path or endpoint and do not need it.
   `.dep-v0` section is null metadata, not proof the binary has no dependencies.
   A rustc commit hash is an inference from a read-only `/rustc/<40-hex>/` path.
   For selected crates, use `view: {collection: "packages", names: [...],
-  fields: ["name", "version", "source"]}` on the first call; explicitly include
+fields: ["name", "version", "source"]}` on the first call; explicitly include
   `dependencies` for direct index references. Use `detail: "summary"` for counts
   and ranges, or retained `inspect_analysis_view` Rust package/edge pages for
   subsequent filters. Keep the complete parent Evidence accessible; CLI compact
@@ -255,8 +255,8 @@ explicit path or endpoint and do not need it.
   [ELF notes guide](https://github.com/morluto/rea/blob/main/docs/elf-notes.md).
 - File type, compiler, linker, library and packer/protector signature leads:
   `detect_file_signatures` with the explicit local file and caller-supplied
-  Detect It Easy (`REA_DIE_COMMAND` for diec 3.09 or `REA_DIE_PYTHON` for
-  die-python 0.5.0) on Linux x64. Report detections as DiE's leads with its
+  Detect It Easy through `REA_DIE_PYTHON` (die-python 0.5.0) on Linux x64;
+  `REA_DIE_COMMAND` (diec) is refused as unverified. Report detections as DiE's leads with its
   heuristic marker, never as proof of a component or of maliciousness or safety;
   a missing detection proves nothing. It detects protections only: do not
   propose unpacking or bypass steps. See the

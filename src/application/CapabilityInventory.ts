@@ -499,7 +499,7 @@ const workflowAvailabilityFor = ({
       policy,
       "fileSignatures",
       policy.fileSignaturesEnabled,
-      "On Linux x64, set absolute REA_DIE_COMMAND to caller-supplied diec 3.09 or REA_DIE_PYTHON to Python with die-python 0.5.0, plus util-linux prlimit (REA_DIE_PRLIMIT_COMMAND, default /usr/bin/prlimit). No active binary target is required; the tool is checked at execution.",
+      "On Linux x64, set absolute REA_DIE_PYTHON to caller-supplied Python with die-python 0.5.0, plus util-linux prlimit (REA_DIE_PRLIMIT_COMMAND, default /usr/bin/prlimit), and leave REA_DIE_COMMAND unset: diec is not admitted until a real diec lane verifies it. No active binary target is required; the tool is checked at execution.",
     );
   if (name === "inspect_packet_capture" || name === "inspect_packet_fields")
     return hostRestrictedAvailability(

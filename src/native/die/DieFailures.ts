@@ -40,12 +40,12 @@ import {
 export const DETECT_FILE_SIGNATURES = "detect_file_signatures";
 const EXCERPT_BYTES = 4096;
 
-/** Which stage failed: tool selection, the selected file, or the DiE scan. */
-export type DiePhase = "configuration" | "artifact" | "scanner";
+/** Which stage failed: tool selection, inherited limits, the selected file, or the DiE scan. */
+export type DiePhase = "configuration" | "limits" | "artifact" | "scanner";
 
 /** Configuration is captured by the server; fixing files and changing its environment are distinct repairs. */
 export const dieConfigurationRecoveryAction = (): string =>
-  `Set absolute REA_DIE_COMMAND to a caller-supplied diec ${DIE_ENGINE_VERSION}, or absolute REA_DIE_PYTHON to a Python executable whose environment contains die-python ${DIE_PYTHON_PACKAGE_VERSION} (REA_DIE_COMMAND wins when both are set), plus util-linux prlimit (REA_DIE_PRLIMIT_COMMAND, default /usr/bin/prlimit). Set this in the shell for the next CLI call, or in the MCP server launch environment and restart that server. REA never installs DiE. Do not repeat the unchanged call.`;
+  `Set absolute REA_DIE_PYTHON to a Python executable whose environment contains die-python ${DIE_PYTHON_PACKAGE_VERSION} (DiE ${DIE_ENGINE_VERSION}), plus util-linux prlimit (REA_DIE_PRLIMIT_COMMAND, default /usr/bin/prlimit), and leave REA_DIE_COMMAND unset: the diec backend is not admitted until a real diec lane verifies it. Set this in the shell for the next CLI call, or in the MCP server launch environment and restart that server. REA never installs DiE. Do not repeat the unchanged call.`;
 
 /** A refused tool requirement that another input file cannot satisfy. */
 export const dieUnavailable = (
@@ -67,28 +67,34 @@ export const dieUnavailable = (
     },
   );
 
-/** Complete captured output of one finished DiE command. */
-export const capturedDieOutput = (
+/**
+ * Bounded excerpt of one finished DiE command for an error: each stream keeps
+ * at most 4 KiB, cut on a code point, while the byte counts and exit status
+ * describe the complete output.
+ */
+export const boundedDieOutput = (
   snapshot: ProviderProcessSnapshot,
-): AnalysisCapturedOutput => ({
-  stdout: snapshot.stdout.text,
-  stderr: snapshot.stderr.text,
-  stdout_bytes: snapshot.stdout.bytes,
-  stderr_bytes: snapshot.stderr.bytes,
-  exit_code: snapshot.exitCode ?? null,
-  signal: snapshot.signal ?? null,
-  truncated: snapshot.diagnosticTruncated === true,
-});
+): AnalysisCapturedOutput => {
+  const stdout = boundedUtf8Text(snapshot.stdout.text, EXCERPT_BYTES);
+  const stderr = boundedUtf8Text(snapshot.stderr.text, EXCERPT_BYTES);
+  return {
+    stdout: stdout.text,
+    stderr: stderr.text,
+    stdout_bytes: snapshot.stdout.bytes,
+    stderr_bytes: snapshot.stderr.bytes,
+    exit_code: snapshot.exitCode ?? null,
+    signal: snapshot.signal ?? null,
+    truncated:
+      snapshot.diagnosticTruncated === true ||
+      stdout.truncated ||
+      stderr.truncated,
+  };
+};
 
-/** Past the output budget, retained text is a prefix of an oversized stream. */
-const excerpt = (
-  snapshot: ProviderProcessSnapshot,
-): AnalysisCapturedOutput => ({
-  ...capturedDieOutput(snapshot),
-  stdout: boundedUtf8Text(snapshot.stdout.text, EXCERPT_BYTES).text,
-  stderr: boundedUtf8Text(snapshot.stderr.text, EXCERPT_BYTES).text,
-  truncated: true,
-});
+const CEILING_RECOVERY = {
+  SIGXCPU: `The DiE cpu_seconds ceiling (${String(DIE_LIMITS.cpuSeconds)}) is fixed; command_timeout_ms does not raise it. Request fewer scan options or select a smaller file. Do not repeat the unchanged call.`,
+  SIGXFSZ: `SIGXFSZ means the DiE process tried to grow a file past the fixed zero-byte file_bytes ceiling. DiE's embedded Qt QML engine does this when it sizes an anonymous memfd (memfd_create, then ftruncate), independent of the scanned file. CPython ignores SIGXFSZ, so die-python continues past it; a native diec keeps the default disposition and dies, which is why REA does not admit diec yet. Use REA_DIE_PYTHON with die-python ${DIE_PYTHON_PACKAGE_VERSION}. Do not repeat the unchanged call.`,
+} as const;
 
 /** A limiter signal names its ceiling; other signals do not establish a cause. */
 const limiterSignal = (
@@ -96,17 +102,15 @@ const limiterSignal = (
   timeoutMs: number,
   capturedOutput: AnalysisCapturedOutput | undefined,
 ): AnalysisError | undefined => {
+  if (signal !== "SIGXCPU" && signal !== "SIGXFSZ") return undefined;
   const ceiling =
     signal === "SIGXCPU"
       ? ({ resource: "cpu", name: "cpu_seconds" } as const)
-      : signal === "SIGXFSZ"
-        ? ({ resource: "file-size", name: "file_bytes" } as const)
-        : undefined;
-  if (ceiling === undefined) return undefined;
+      : ({ resource: "file-size", name: "file_bytes" } as const);
   return new AnalysisResourceConstraintError(
     DETECT_FILE_SIGNATURES,
     ceiling.resource,
-    `DiE was stopped by ${signal ?? ""} at its ${ceiling.name} ceiling.`,
+    `DiE was stopped by ${signal} at its ${ceiling.name} ceiling.`,
     {
       cpu_seconds: DIE_LIMITS.cpuSeconds,
       file_bytes: DIE_LIMITS.fileBytes,
@@ -115,10 +119,17 @@ const limiterSignal = (
     {
       ...(capturedOutput === undefined ? {} : { capturedOutput }),
       retryable: false,
-      remediationAction: `The DiE ${ceiling.name} ceiling is fixed (cpu_seconds ${String(DIE_LIMITS.cpuSeconds)}, file_bytes ${String(DIE_LIMITS.fileBytes)}); command_timeout_ms does not raise it. A scan that writes files or needs more CPU time is outside this adapter. Do not repeat the unchanged call.`,
+      remediationAction: CEILING_RECOVERY[signal],
     },
   );
 };
+
+/** REA's own deadline and cancellation are classified first, so this SIGKILL came from elsewhere. */
+const UNATTRIBUTED_SIGNAL_RECOVERY = {
+  SIGKILL: `REA did not send this SIGKILL. Linux sends SIGKILL, not SIGXCPU, when the pinned ${String(DIE_LIMITS.cpuSeconds)} CPU-second ceiling is reached, because its soft and hard limits are equal; the kernel OOM killer and other processes also send it. The cause is not established. Inspect the retained DiE output; request fewer scan options or select a smaller file before retrying.`,
+  other:
+    "Inspect the retained DiE output. A signal other than SIGXCPU or SIGXFSZ does not establish its cause, including memory exhaustion.",
+} as const;
 
 /** Preserve lifecycle failures and diagnostic bytes instead of returning partial success. */
 export const dieFailure = (
@@ -161,6 +172,21 @@ const classify = (
       DETECT_FILE_SIGNATURES,
       cause,
     );
+  if (phase === "limits") {
+    const limitsReason = `Inherited Linux resource limits could not be established from /proc/self/limits: ${reason}`;
+    return new AnalysisCapabilityUnavailableError(
+      DIE_PROVIDER_IDENTITY.id,
+      DETECT_FILE_SIGNATURES,
+      limitsReason,
+      {
+        cause,
+        ...cleanupOptions,
+        userMessage: limitsReason,
+        remediationAction:
+          "REA reads /proc/self/limits before each DiE scan so tighter inherited ceilings are kept. Run REA on a Linux host where procfs is mounted and /proc/self/limits is readable by the REA process; DiE configuration is not the cause. Do not repeat the unchanged call.",
+      },
+    );
+  }
   if (phase === "configuration")
     return dieUnavailable(`Configured DiE is unavailable: ${reason}`, {
       cause,
@@ -225,9 +251,11 @@ const commandFailure = (
   const capturedOutput =
     cause.snapshot === null
       ? undefined
-      : cause.reason === "output-limit"
-        ? excerpt(cause.snapshot)
-        : capturedDieOutput(cause.snapshot);
+      : {
+          ...boundedDieOutput(cause.snapshot),
+          // Past the output budget, retained text is a prefix of an oversized stream.
+          ...(cause.reason === "output-limit" ? { truncated: true } : {}),
+        };
   const options = {
     cause,
     ...(capturedOutput === undefined ? {} : { capturedOutput }),
@@ -291,6 +319,8 @@ const commandFailure = (
   return new AnalysisOutputError(DETECT_FILE_SIGNATURES, cause.message, {
     ...options,
     remediationAction:
-      "Inspect the retained DiE output. A signal other than SIGXCPU or SIGXFSZ does not establish its cause, including memory exhaustion.",
+      cause.snapshot?.signal === "SIGKILL"
+        ? UNATTRIBUTED_SIGNAL_RECOVERY.SIGKILL
+        : UNATTRIBUTED_SIGNAL_RECOVERY.other,
   });
 };

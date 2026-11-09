@@ -110,6 +110,22 @@ const toolProfileSchema = z.strictObject({
     resolved_path: z.string().min(1),
     sha256: digestSchema,
   }),
+  native_module: z
+    .strictObject({ path: z.string().min(1), sha256: digestSchema })
+    .nullable()
+    .describe(
+      "die-python's loaded native scanner module, digested before the scan and verified unchanged after it; null for diec",
+    ),
+  resource_limiter: z
+    .strictObject({
+      configured_path: z.string().min(1),
+      path: z.string().min(1),
+      sha256: digestSchema,
+      arguments: z.array(z.string()),
+    })
+    .describe(
+      "util-linux prlimit that ran each DiE command: configured and resolved paths, SHA-256 verified unchanged after the scan, and its arguments ending with the DiE executable",
+    ),
   engine_version: z.string().min(1),
   version_banner: z.string().nullable(),
   package_version: z.string().nullable(),

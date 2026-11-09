@@ -53,6 +53,16 @@ const report: FileSignatures = {
       resolved_path: "/usr/bin/python3.13",
       sha256: "b".repeat(64),
     },
+    native_module: {
+      path: "/opt/die/lib/python3.13/site-packages/die/_die.so",
+      sha256: "d".repeat(64),
+    },
+    resource_limiter: {
+      configured_path: "/usr/bin/prlimit",
+      path: "/usr/bin/prlimit",
+      sha256: "e".repeat(64),
+      arguments: ["--fsize=0:0", "--", "/opt/die/bin/python"],
+    },
     engine_version: "3.09",
     version_banner: null,
     package_version: "0.5.0",

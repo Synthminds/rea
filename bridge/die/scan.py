@@ -20,6 +20,7 @@ SCAN_FLAGS = {
 }
 DATABASE_MAX_FILES = 20000
 DATABASE_MAX_BYTES = 256 * 1024 * 1024
+MODULE_MAX_BYTES = 256 * 1024 * 1024
 
 
 class BridgeFailure(Exception):
@@ -54,6 +55,20 @@ def database_identity(root):
     return len(records), hashlib.sha256("".join(records).encode("utf-8")).hexdigest()
 
 
+def module_identity(module):
+    """Resolved path and SHA-256 of the loaded native scanner module, before the scan."""
+    path = os.path.realpath(module.__file__)
+    digest = hashlib.sha256()
+    total = 0
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            total += len(chunk)
+            if total > MODULE_MAX_BYTES:
+                raise BridgeFailure("unavailable", "The die-python native module exceeds the 256 MiB identity budget: " + path)
+            digest.update(chunk)
+    return {"path": path, "sha256": digest.hexdigest()}
+
+
 def scan(request):
     try:
         import die
@@ -85,6 +100,11 @@ def scan(request):
             + ".",
             observed,
         )
+    try:
+        from die import _die as native
+    except ImportError as error:
+        raise BridgeFailure("unavailable", "die-python's native scanner module is not importable: " + str(error))
+    native_module = module_identity(native)
     database = str(die.database_path)
     files, digest = database_identity(database)
     if die.load_database(database) != 1:
@@ -94,7 +114,7 @@ def scan(request):
         if request["scan"][field] is True:
             flags |= getattr(die.ScanFlags, member)
     document = die.scan_file(request["path"], flags, database)
-    return dict(observed, database={"files": files, "sha256": digest}, document=document)
+    return dict(observed, native_module=native_module, database={"files": files, "sha256": digest}, document=document)
 
 
 def main():

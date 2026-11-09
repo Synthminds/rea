@@ -1777,11 +1777,23 @@ On Linux x64, set `REA_VERIFY_DIE_PYTHON` to an absolute Python executable with
 die-python 0.5.0 and util-linux `prlimit` at `/usr/bin/prlimit`, then run
 `npm run test:focused -- tests/boundary/providers/dieSignatures.test.ts`. The
 real cases identify a host ELF and a generated PE image with a ZIP overlay
-through the provider, check snapshot release and recursive file parts, and
-exercise a real command deadline and a Python without die-python. Without the
-variable they skip by name; configuration and file-admission controls still run.
-No real `diec` lane exists yet: its version gate uses an authored stand-in, and
-its argument and output framing are derived from DiE 3.09 source only.
+through the provider, check snapshot release, recursive file parts and the
+recorded limiter and native module, and exercise a real command deadline and a
+Python without die-python. Without the variable they skip by name;
+configuration, `REA_DIE_COMMAND` refusal and file-admission controls still run.
+
+`tests/boundary/providers/dieSignatureLifecycle.test.ts` runs everywhere on
+Linux x64 with `/usr/bin/prlimit`. Authored bash stand-ins run under the real
+limiter and owned process supervision: output overflow with a bounded excerpt,
+a real `SIGXFSZ` from file growth, a real CPU-ceiling stop (Linux sends
+`SIGKILL` at equal soft and hard CPU limits), an authored `SIGXCPU`, nonzero
+exit, a malformed bridge reply, snapshot truncation, executable, limiter and
+native-module replacement through the launcher seam, `/proc/self/limits` read
+failure, a `setsid` descendant swept by run token, cancellation during the scan
+and during runtime-root removal, and root-removal failure with retry through
+`close()`. No real `diec` lane exists yet; `diec` is refused at selection, and
+its version gate, nonzero-exit mapping and output framing are exercised only
+through a source-owned backend seam with authored stand-ins.
 
 ### Offline EVM interface
 
