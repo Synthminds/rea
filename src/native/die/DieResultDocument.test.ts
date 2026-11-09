@@ -205,3 +205,23 @@ it("separates diec messages from its indented JSON document", () => {
     ok: false,
   });
 });
+
+it.each([
+  [
+    "a bare document before the real one",
+    '{\n"detects":[]\n}\n{\n    "detects": [\n        {"type":"P","name":"U","version":"","info":"","string":"P: U"}\n    ]\n}\n',
+  ],
+  ["an unindented nested object", '{\n"detects":[\n{\n}\n]\n}\n'],
+  [
+    "a bare brace message after the document",
+    '{\n    "detects": [\n    ]\n}\n}\n',
+  ],
+  ["a closing brace before the document", '}\n{\n    "detects": []\n}\n'],
+])("refuses diec output with %s", (_case, stdout) => {
+  // Authored framing controls; a real diec prints one indented document.
+  const split = splitDiecOutput(stdout);
+  expect(split.ok).toBe(false);
+  expect(split.ok ? undefined : split.error).toMatch(
+    /exactly one indented JSON result document|incomplete JSON result document/u,
+  );
+});

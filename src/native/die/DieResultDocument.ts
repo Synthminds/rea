@@ -132,18 +132,26 @@ export const parseDieResultDocument = (
  * Split diec stdout into its indented JSON document and surrounding DiE
  * messages. DiE 3.09 prints script errors and info messages as plain lines
  * around the document; Qt's indented writer starts and ends the top-level
- * object on unindented `{` and `}` lines, and JSON strings cannot contain a
- * raw line break.
+ * object on unindented `{` and `}` lines and indents everything inside it,
+ * and JSON strings cannot contain a raw line break. Exactly one such pair is
+ * accepted: any other bare brace line means a second document or a message
+ * that cannot be told apart from one.
  */
 export const splitDiecOutput = (
   stdout: string,
 ): Result<{ document: string; messages: string[] }, string> => {
   const lines = stdout.split(/\r?\n/u);
-  const start = lines.indexOf("{");
-  if (start === -1) return err("diec printed no JSON result document.");
-  const end = lines.indexOf("}", start + 1);
-  if (end === -1)
+  const opens = lines.flatMap((line, index) => (line === "{" ? [index] : []));
+  const closes = lines.flatMap((line, index) => (line === "}" ? [index] : []));
+  const [start] = opens;
+  if (start === undefined) return err("diec printed no JSON result document.");
+  const [end] = closes;
+  if (end === undefined || end < start)
     return err("diec printed an incomplete JSON result document.");
+  if (opens.length !== 1 || closes.length !== 1)
+    return err(
+      `diec printed ${String(opens.length)} top-level "{" and ${String(closes.length)} top-level "}" lines; exactly one indented JSON result document is required.`,
+    );
   const messages = [...lines.slice(0, start), ...lines.slice(end + 1)].filter(
     (line) => line.trim() !== "",
   );
