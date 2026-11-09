@@ -109,7 +109,11 @@ output error whose remediation names that ceiling, the OOM killer and other
 senders without choosing among them. A snapshot that changed during the scan
 is `artifact_changed`; a changed executable, limiter or scanner module is an
 output error. Errors carry at most 4 KiB of each output stream with the
-complete byte counts. Owned processes, run-token descendants that left the
+complete byte counts. Cancellation after DiE finishes returns typed
+cancellation whose partial observation keeps DiE's parsed detections with
+`artifact_after` unknown; its limitations name any snapshot, executable,
+limiter or module check REA had not yet confirmed, and such detections are
+unverified. Owned processes, run-token descendants that left the
 process group, and the private snapshot are released before a result returns;
 cleanup that cannot finish is reported with its resources for retry.
 
@@ -147,8 +151,8 @@ CLI and stdio MCP. Lifecycle and failure controls use authored stand-ins under
 the real `prlimit`: output overflow, real `SIGXFSZ` and CPU-ceiling stops, an
 authored `SIGXCPU`, nonzero exit, malformed bridge replies, snapshot tampering,
 executable, limiter and module replacement during a scan, a `setsid`
-descendant, cancellation during the scan and during runtime removal, and
-runtime removal failure with retry. Stand-ins do not establish real DiE
+descendant, cancellation during the scan, during each read after it and
+during runtime removal, and runtime removal failure with retry. Stand-ins do not establish real DiE
 behavior.
 
 On a shared verification host, a warm stdio MCP call on a 785 KB ELF with

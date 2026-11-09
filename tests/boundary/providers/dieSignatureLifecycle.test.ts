@@ -546,15 +546,38 @@ describe.skipIf(!supported)("DiE integrity and process ownership", () => {
 
 /**
  * REA's reads after the stand-in exits, in order, with the opens of the same
- * path that tool selection or snapshot staging made before the scan.
+ * path that tool selection or snapshot staging made before the scan, and the
+ * integrity reads a cancellation during that read leaves unconfirmed.
  */
 const POST_SCAN_READS = [
-  { read: "private snapshot", earlier: 0 },
-  { read: "configured DiE executable", earlier: 1 },
-  { read: "resource limiter", earlier: 1 },
-  { read: "die-python native scanner module", earlier: 0 },
-  { read: "selected file", earlier: 1 },
+  {
+    read: "private snapshot",
+    earlier: 0,
+    unconfirmed:
+      "private snapshot, configured DiE executable, configured resource limiter, die-python native scanner module",
+  },
+  {
+    read: "configured DiE executable",
+    earlier: 1,
+    unconfirmed:
+      "configured DiE executable, configured resource limiter, die-python native scanner module",
+  },
+  {
+    read: "resource limiter",
+    earlier: 1,
+    unconfirmed:
+      "configured resource limiter, die-python native scanner module",
+  },
+  {
+    read: "die-python native scanner module",
+    earlier: 0,
+    unconfirmed: "die-python native scanner module",
+  },
+  { read: "selected file", earlier: 1, unconfirmed: null },
 ] as const;
+
+const DIGEST_UNKNOWN =
+  "The call was cancelled before REA finished reading the selected file again after the scan, so its post-scan digest is unknown.";
 
 /**
  * Arm the fault for the post-scan open of one read and return its exact path.
@@ -618,6 +641,26 @@ describe.skipIf(!supported)("DiE post-scan result reads", () => {
         cleanupIncomplete: false,
       });
       expect(error.cause).toBe(reason);
+      // DiE's parsed detections survive, with the unread digest left unknown
+      // and every integrity read the cancellation preempted named.
+      const partial = projectAnalysisError(error).details?.partial_observation;
+      expect(partial).toMatchObject({
+        confidence: "observed",
+        normalized_result: {
+          artifact: { sha256: sha256(fixture.targetBytes) },
+          artifact_after: { sha256: null, changed: null },
+          detections: [expect.objectContaining({ name: "UPX" })],
+        },
+      });
+      const limitations = (partial as { limitations: string[] }).limitations;
+      expect(limitations).toContain(DIGEST_UNKNOWN);
+      expect(
+        limitations.filter((line) => line.includes("before REA confirmed")),
+      ).toEqual(
+        entry.unconfirmed === null
+          ? []
+          : [expect.stringContaining(`scan: ${entry.unconfirmed}. These`)],
+      );
       expect(fault.handles.every((handle) => handle.fd === -1)).toBe(true);
       await expectReleased(run);
     },

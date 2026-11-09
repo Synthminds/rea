@@ -72,6 +72,7 @@ import {
 import {
   parseDieResultDocument,
   splitDiecOutput,
+  type DieResultDocument,
 } from "./DieResultDocument.js";
 
 type Launcher = NonNullable<Parameters<typeof runOwnedCommand>[2]>["launcher"];
@@ -134,6 +135,16 @@ interface SelectedLimiter {
   readonly path: string;
   readonly sha256: string;
 }
+
+/** A file that ran during the scan, with the digest recorded before it. */
+interface ExecutedFile {
+  readonly label: string;
+  readonly path: string;
+  readonly sha256: string;
+}
+
+/** The first read REA makes after DiE exits. */
+const SNAPSHOT_READ = "private snapshot";
 
 /** Lines DiE or its host printed outside the result document. */
 const messageLines = (text: string): string[] =>
@@ -353,29 +364,23 @@ export class DieSignatureProvider implements FileSignaturesPort {
       });
   }
 
-  /** Every executed file must still hold the bytes recorded before the scan. */
+  /** An executed file must still hold the bytes recorded before the scan. */
   async #verifyUnchanged(
-    files: readonly {
-      readonly label: string;
-      readonly path: string;
-      readonly sha256: string;
-    }[],
+    file: ExecutedFile,
     signal: AbortSignal | undefined,
     capturedOutput: AnalysisCapturedOutput,
   ): Promise<void> {
-    for (const file of files) {
-      const after = await this.#digest(file.path, DIE_LIMITS.toolBytes, signal);
-      if (after.sha256 !== file.sha256)
-        throw new AnalysisOutputError(
-          OPERATION,
-          `The ${file.label} changed during the scan: ${file.path}`,
-          {
-            capturedOutput,
-            remediationAction:
-              "The bytes that produced this scan are unknown. Keep the DiE installation and limiter unchanged while REA runs, then repeat the call.",
-          },
-        );
-    }
+    const after = await this.#digest(file.path, DIE_LIMITS.toolBytes, signal);
+    if (after.sha256 !== file.sha256)
+      throw new AnalysisOutputError(
+        OPERATION,
+        `The ${file.label} changed during the scan: ${file.path}`,
+        {
+          capturedOutput,
+          remediationAction:
+            "The bytes that produced this scan are unknown. Keep the DiE installation and limiter unchanged while REA runs, then repeat the call.",
+        },
+      );
   }
 
   async #inspect(
@@ -388,6 +393,11 @@ export class DieSignatureProvider implements FileSignaturesPort {
     let phase: DiePhase = "configuration";
     let runtime: OwnedCommandRuntime | undefined;
     let capturedOutput: AnalysisCapturedOutput | undefined;
+    // Once DiE's output parses: what cancellation during REA's post-scan reads
+    // returns, naming the reads it had not confirmed.
+    let cancelledAfterScan:
+      | (() => FileSignaturesExecution | undefined)
+      | undefined;
     let result: Result<FileSignaturesExecution, AnalysisError>;
     try {
       if (signal?.aborted)
@@ -492,58 +502,28 @@ export class DieSignatureProvider implements FileSignaturesPort {
             ];
       const scan = await run(scanArguments, tool.backend === "diec");
       const scanOutput = boundedDieOutput(scan);
-      await this.#verifySnapshot(snapshotPath, artifact, signal, scanOutput);
-      await this.#verifyUnchanged(
-        [
-          {
-            label: "configured DiE executable",
-            path: tool.resolvedPath,
-            sha256: tool.sha256,
-          },
-          {
-            label: "configured resource limiter",
-            path: limiter.path,
-            sha256: limiter.sha256,
-          },
-        ],
-        signal,
-        scanOutput,
-      );
+      // Interpret the finished scan before REA's post-scan reads so that a
+      // cancellation during any of them still has its detections. Failures to
+      // interpret it keep yielding to the integrity checks below.
       const produced =
         tool.backend === "diec"
           ? diecResult(scan, versionBanner)
           : diePythonResult(scan, tool);
-      if (produced.profile.native_module !== null)
-        await this.#verifyUnchanged(
-          [
-            {
-              label: "die-python native scanner module",
-              ...produced.profile.native_module,
-            },
-          ],
-          signal,
-          scanOutput,
-        );
-      const parsed = parseDieResultDocument(produced.document);
-      if (!parsed.ok)
-        throw new AnalysisOutputError(OPERATION, parsed.error, {
-          capturedOutput: scanOutput,
-        });
-      const after = await this.#digestAfter(input, signal);
-      const report = fileSignaturesSchema.parse({
+      const reportOf = (
+        output: ProducedResult,
+        detected: DieResultDocument,
+        afterSha256: string | null,
+      ) => ({
         artifact,
         artifact_after: {
-          sha256: after.sha256,
+          sha256: afterSha256,
           changed:
-            after.sha256 === null ? null : after.sha256 !== artifact.sha256,
+            afterSha256 === null ? null : afterSha256 !== artifact.sha256,
         },
         scan: scanOptions(input),
-        file_parts: parsed.value.file_parts,
-        detections: parsed.value.detections,
-        scan_messages: [
-          ...produced.messages,
-          ...messageLines(scan.stderr.text),
-        ],
+        file_parts: detected.file_parts,
+        detections: detected.detections,
+        scan_messages: [...output.messages, ...messageLines(scan.stderr.text)],
         tool_profile: {
           backend: tool.backend,
           configuration_key: tool.configurationKey,
@@ -558,7 +538,7 @@ export class DieSignatureProvider implements FileSignaturesPort {
             sha256: limiter.sha256,
             arguments: limiterArguments,
           },
-          ...produced.profile,
+          ...output.profile,
           arguments: scanArguments,
           timeout_ms: timeoutMs,
           output_budget_bytes: DIE_LIMITS.outputBytes,
@@ -570,8 +550,10 @@ export class DieSignatureProvider implements FileSignaturesPort {
         } satisfies ToolProfile,
         target_execution: "not-performed",
       });
-      const limitations = dieLimitations(report, after.unknown);
-      result = ok(
+      const executionOf = (
+        report: Report,
+        postScan: readonly string[],
+      ): FileSignaturesExecution =>
         createAnalysisExecution(report, DIE_PROVIDER_IDENTITY, {
           subject: {
             path: input.path,
@@ -579,12 +561,78 @@ export class DieSignatureProvider implements FileSignaturesPort {
             sha256: artifact.sha256,
           },
           locations: [{ kind: "artifact-path", path: input.path }],
-          limitations,
-        }),
+          limitations: dieLimitations(report, postScan),
+        });
+      const executed: ExecutedFile[] = [
+        {
+          label: "configured DiE executable",
+          path: tool.resolvedPath,
+          sha256: tool.sha256,
+        },
+        {
+          label: "configured resource limiter",
+          path: limiter.path,
+          sha256: limiter.sha256,
+        },
+        // Only a valid bridge reply names the module; an invalid one fails below.
+        ...(produced.ok && produced.value.profile.native_module !== null
+          ? [
+              {
+                label: "die-python native scanner module",
+                ...produced.value.profile.native_module,
+              },
+            ]
+          : []),
+      ];
+      const unconfirmed = new Set([
+        SNAPSHOT_READ,
+        ...executed.map(({ label }) => label),
+      ]);
+      if (produced.ok && produced.value.document.ok) {
+        const output = produced.value;
+        const detected = produced.value.document.value;
+        cancelledAfterScan = () => {
+          const report = fileSignaturesSchema.safeParse(
+            reportOf(output, detected, null),
+          );
+          return report.success
+            ? executionOf(report.data, cancelledPostScan([...unconfirmed]))
+            : undefined;
+        };
+      }
+      await this.#verifySnapshot(snapshotPath, artifact, signal, scanOutput);
+      unconfirmed.delete(SNAPSHOT_READ);
+      for (const file of executed) {
+        await this.#verifyUnchanged(file, signal, scanOutput);
+        unconfirmed.delete(file.label);
+      }
+      if (!produced.ok) throw produced.error;
+      const { document } = produced.value;
+      if (!document.ok)
+        throw new AnalysisOutputError(OPERATION, document.error, {
+          capturedOutput: scanOutput,
+        });
+      const after = await this.#digestAfter(input, signal);
+      result = ok(
+        executionOf(
+          fileSignaturesSchema.parse(
+            reportOf(produced.value, document.value, after.sha256),
+          ),
+          after.unknown === undefined ? [] : [after.unknown],
+        ),
       );
     } catch (cause: unknown) {
       const failure = dieFailure(cause, phase, input.path, timeoutMs);
       runtime?.retainCommandFailure(cause, failure, this.#resources);
+      // Cancellation during a post-scan read keeps the detections DiE produced.
+      const parsed =
+        failure instanceof AnalysisCancelledError
+          ? cancelledAfterScan?.()
+          : undefined;
+      if (parsed !== undefined)
+        failure.retainPartialObservation(
+          createAnalysisExecutionEvidence(OPERATION, input, parsed, "observed"),
+        );
       result = err(
         failure instanceof AnalysisOutputError &&
           failure.capturedOutput === undefined &&
@@ -701,8 +749,9 @@ const scanOptions = (input: DetectFileSignaturesInput): Report["scan"] => ({
   all_types: input.all_types,
 });
 
+/** One finished scan's output, interpreted once; integrity checks still follow. */
 type ProducedResult = {
-  readonly document: string;
+  readonly document: Result<DieResultDocument, string>;
   readonly messages: readonly string[];
   readonly profile: Pick<
     ToolProfile,
@@ -723,23 +772,27 @@ type ProducedResult = {
 const diecResult = (
   scan: ProviderProcessSnapshot,
   versionBanner: string | null,
-): ProducedResult => {
+): Result<ProducedResult, AnalysisError> => {
   if (scan.exitCode !== 0)
-    throw new AnalysisOutputError(
-      OPERATION,
-      `diec exited with status ${String(scan.exitCode ?? scan.signal)}.`,
-      {
-        capturedOutput: boundedDieOutput(scan),
-        remediationAction: `Inspect the retained diec output. DiE ${DIE_ENGINE_VERSION} diec exits nonzero when it cannot load its installation's signature database or cannot open the private snapshot; repair the database for the former. Do not repeat the unchanged call.`,
-      },
+    return err(
+      new AnalysisOutputError(
+        OPERATION,
+        `diec exited with status ${String(scan.exitCode ?? scan.signal)}.`,
+        {
+          capturedOutput: boundedDieOutput(scan),
+          remediationAction: `Inspect the retained diec output. DiE ${DIE_ENGINE_VERSION} diec exits nonzero when it cannot load its installation's signature database or cannot open the private snapshot; repair the database for the former. Do not repeat the unchanged call.`,
+        },
+      ),
     );
   const split = splitDiecOutput(scan.stdout.text);
   if (!split.ok)
-    throw new AnalysisOutputError(OPERATION, split.error, {
-      capturedOutput: boundedDieOutput(scan),
-    });
-  return {
-    document: split.value.document,
+    return err(
+      new AnalysisOutputError(OPERATION, split.error, {
+        capturedOutput: boundedDieOutput(scan),
+      }),
+    );
+  return ok({
+    document: parseDieResultDocument(split.value.document),
     messages: split.value.messages,
     profile: {
       engine_version: DIE_ENGINE_VERSION,
@@ -750,23 +803,25 @@ const diecResult = (
       native_module: null,
       database: { source: "installation-default", files: null, sha256: null },
     },
-  };
+  });
 };
 
 /** The owned bridge prints one reply line; native messages were redirected to stderr. */
 const diePythonResult = (
   scan: ProviderProcessSnapshot,
   tool: SelectedTool,
-): ProducedResult => {
+): Result<ProducedResult, AnalysisError> => {
   const capturedOutput = boundedDieOutput(scan);
   let reply: z.output<typeof bridgeReplySchema>;
   try {
     reply = bridgeReplySchema.parse(JSON.parse(scan.stdout.text));
   } catch (cause: unknown) {
-    throw new AnalysisOutputError(
-      OPERATION,
-      `The die-python bridge reply is malformed: ${cause instanceof z.ZodError ? (cause.issues[0]?.message ?? "schema mismatch") : cause instanceof Error ? cause.message : String(cause)}`,
-      { cause, capturedOutput },
+    return err(
+      new AnalysisOutputError(
+        OPERATION,
+        `The die-python bridge reply is malformed: ${cause instanceof z.ZodError ? (cause.issues[0]?.message ?? "schema mismatch") : cause instanceof Error ? cause.message : String(cause)}`,
+        { cause, capturedOutput },
+      ),
     );
   }
   if (!reply.ok) {
@@ -776,37 +831,43 @@ const diePythonResult = (
       reply.reason === "unavailable" ||
       reply.reason === "unsupported-version"
     )
-      throw dieUnavailable(message, {
-        capturedOutput,
-        diagnostics: {
-          configuration_key: tool.configurationKey,
-          executable_path: tool.path,
-          expected_version: `die-python ${DIE_PYTHON_PACKAGE_VERSION} with DiE ${DIE_ENGINE_VERSION}`,
-          ...reply.observed,
-        },
-      });
-    if (reply.reason === "memory")
-      throw new AnalysisResourceConstraintError(
-        OPERATION,
-        "memory",
-        message,
-        { address_space_bytes: DIE_LIMITS.addressSpaceBytes },
-        {
+      return err(
+        dieUnavailable(message, {
           capturedOutput,
-          retryable: false,
-          remediationAction: `The ${String(DIE_LIMITS.addressSpaceBytes)}-byte DiE address-space ceiling has no runtime override; request fewer scan options or select a smaller file. Do not repeat the unchanged call.`,
-        },
+          diagnostics: {
+            configuration_key: tool.configurationKey,
+            executable_path: tool.path,
+            expected_version: `die-python ${DIE_PYTHON_PACKAGE_VERSION} with DiE ${DIE_ENGINE_VERSION}`,
+            ...reply.observed,
+          },
+        }),
       );
-    throw new AnalysisOutputError(OPERATION, message, { capturedOutput });
+    if (reply.reason === "memory")
+      return err(
+        new AnalysisResourceConstraintError(
+          OPERATION,
+          "memory",
+          message,
+          { address_space_bytes: DIE_LIMITS.addressSpaceBytes },
+          {
+            capturedOutput,
+            retryable: false,
+            remediationAction: `The ${String(DIE_LIMITS.addressSpaceBytes)}-byte DiE address-space ceiling has no runtime override; request fewer scan options or select a smaller file. Do not repeat the unchanged call.`,
+          },
+        ),
+      );
+    return err(new AnalysisOutputError(OPERATION, message, { capturedOutput }));
   }
   if (reply.document === null)
-    throw new AnalysisOutputError(
-      OPERATION,
-      "die-python returned no result document.",
-      { capturedOutput },
+    return err(
+      new AnalysisOutputError(
+        OPERATION,
+        "die-python returned no result document.",
+        { capturedOutput },
+      ),
     );
-  return {
-    document: reply.document,
+  return ok({
+    document: parseDieResultDocument(reply.document),
     messages: [],
     profile: {
       engine_version: reply.engine_version,
@@ -821,13 +882,26 @@ const diePythonResult = (
         sha256: reply.database.sha256,
       },
     },
-  };
+  });
 };
+
+/**
+ * What cancellation during REA's post-scan reads leaves unknown: the reads it
+ * had not confirmed, and the selected file's digest, which is read last.
+ */
+const cancelledPostScan = (unconfirmed: readonly string[]): string[] => [
+  ...(unconfirmed.length === 0
+    ? []
+    : [
+        `The call was cancelled after DiE finished, before REA confirmed that these still held the bytes recorded before the scan: ${unconfirmed.join(", ")}. These detections are unverified: they may not describe the selected bytes or come from the recorded tool.`,
+      ]),
+  "The call was cancelled before REA finished reading the selected file again after the scan, so its post-scan digest is unknown.",
+];
 
 /** Coverage statements for this exact report; unrequested scans stay unknown, not absent. */
 const dieLimitations = (
   report: Report,
-  afterUnknown: string | undefined,
+  postScan: readonly string[],
 ): string[] => {
   const unrequested = Object.entries(report.scan)
     .filter(([, requested]) => !requested)
@@ -854,7 +928,7 @@ const dieLimitations = (
       : [
           `Not requested: ${unrequested.join(", ")}. Detections those scans could add are not represented.`,
         ]),
-    ...(afterUnknown === undefined ? [] : [afterUnknown]),
+    ...postScan,
   ];
 };
 
