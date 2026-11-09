@@ -113,9 +113,14 @@ complete byte counts. Cancellation after DiE finishes returns typed
 cancellation whose partial observation keeps DiE's parsed detections with
 `artifact_after` unknown; its limitations name any snapshot, executable,
 limiter or module check REA had not yet confirmed, and such detections are
-unverified. Owned processes, run-token descendants that left the
-process group, and the private snapshot are released before a result returns;
-cleanup that cannot finish is reported with its resources for retry.
+unverified. If DiE's output was invalid, that cancellation keeps the output
+error in `details.diagnostics.scan_output_error` instead. Owned processes,
+run-token descendants that left the process group, and the private snapshot
+are released before a result returns; cleanup that cannot finish is reported
+with its resources for retry. When a post-scan read completes but its
+descriptor cannot be closed, the completed result is returned inside
+`cleanup_incomplete`, and a descriptor inside the private runtime keeps that
+runtime until `close()` releases both.
 
 ## Containment
 

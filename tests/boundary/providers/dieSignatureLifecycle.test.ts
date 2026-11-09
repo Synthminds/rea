@@ -580,6 +580,43 @@ const DIGEST_UNKNOWN =
   "The call was cancelled before REA finished reading the selected file again after the scan, so its post-scan digest is unknown.";
 
 /**
+ * A completed post-scan read whose descriptor close failed: the public
+ * projection is a cleanup failure carrying the complete, verified result.
+ */
+const expectCompletedCleanupFailure = (
+  error: AnalysisError,
+  fixture: Fixture,
+): void => {
+  const projected = projectAnalysisError(error);
+  expect(projected).toMatchObject({
+    code: "cleanup_incomplete",
+    retryable: false,
+    details: {
+      execution_failure: "execution_failure",
+      partial_observation: {
+        confidence: "observed",
+        normalized_result: {
+          artifact: { sha256: sha256(fixture.targetBytes) },
+          artifact_after: {
+            sha256: sha256(fixture.targetBytes),
+            changed: false,
+          },
+          detections: [expect.objectContaining({ name: "UPX" })],
+        },
+      },
+    },
+  });
+  expect(projected.details).not.toHaveProperty("captured_output");
+  const limitations = (
+    projected.details?.partial_observation as { limitations: string[] }
+  ).limitations;
+  expect(limitations).not.toContain(DIGEST_UNKNOWN);
+  expect(
+    limitations.filter((line) => line.includes("before REA confirmed")),
+  ).toEqual([]);
+};
+
+/**
  * Arm the fault for the post-scan open of one read and return its exact path.
  * The snapshot path exists only once the provider created its runtime root.
  */
@@ -690,16 +727,16 @@ describe.skipIf(!supported)("DiE post-scan result reads", () => {
       );
       expect(launchesAtFault).toBe(1);
       expect(fault.handles).toHaveLength(1);
-      // A descriptor inside the private runtime keeps that runtime too.
+      // The read completed, so only the descriptor and its containing runtime
+      // remain; the snapshot keeps the runtime it lives in.
       const runtimePath = run.runtimePaths[0] ?? "";
       const inRuntime = entry.read === "private snapshot";
       expect(error).toMatchObject({
+        _tag: "ProviderAdapterError",
         cleanupIncomplete: true,
         cleanupResources: inRuntime ? [path(), runtimePath] : [path()],
       });
-      expect(projectAnalysisError(error)).toMatchObject({
-        code: "cleanup_incomplete",
-      });
+      expectCompletedCleanupFailure(error, fixture);
       expect(fault.handles[0]?.fd).not.toBe(-1);
       if (inRuntime) await expect(access(runtimePath)).resolves.toBeUndefined();
       else await expectReleased(run);
@@ -712,6 +749,40 @@ describe.skipIf(!supported)("DiE post-scan result reads", () => {
       });
     },
   );
+
+  it("keeps a malformed reply's output error when cancelled during the snapshot read", async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const reason = { authored: "cancel after a malformed reply" };
+    const run = createRun({
+      REA_DIE_PYTHON: await fixture.tool("echo 'not a reply'"),
+    });
+    await armPostScanRead(fixture, run, POST_SCAN_READS[0]);
+    fault.onStat = () => controller.abort(reason);
+    const error = failureOf(
+      await run.service.inspect(
+        { path: fixture.target },
+        { signal: controller.signal },
+      ),
+    );
+    expect(fault.handles).toHaveLength(1);
+    expect(error).toMatchObject({
+      _tag: "AnalysisCancelledError",
+      cleanupIncomplete: false,
+      partialObservation: undefined,
+    });
+    expect(error.cause).toBe(reason);
+    expect(projectAnalysisError(error).details?.diagnostics).toMatchObject({
+      scan_output_error: {
+        code: "unreadable_output",
+        details: {
+          reason: expect.stringContaining("bridge reply is malformed"),
+          captured_output: { stdout: "not a reply\n", exit_code: 0 },
+        },
+      },
+    });
+    await expectReleased(run);
+  });
 });
 
 describe.skipIf(!supported)("DiE runtime-root finalization", () => {

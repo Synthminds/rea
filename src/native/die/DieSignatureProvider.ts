@@ -11,7 +11,10 @@ import type {
   FileSignaturesPort,
 } from "../../application/binaryDiagnostics/FileSignaturesPort.js";
 import { AnalysisCleanupLeaseGroup } from "../../artifacts/AnalysisCleanupLease.js";
-import { bindArtifactFileCleanup } from "../../artifacts/ArtifactFileOperation.js";
+import {
+  ArtifactFileCleanupFailure,
+  bindArtifactFileCleanup,
+} from "../../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
 import {
   ArtifactResourceRetryFailure,
@@ -307,6 +310,26 @@ export class DieSignatureProvider implements FileSignaturesPort {
   }
 
   /**
+   * A post-scan read that completed keeps its digest when only its descriptor
+   * close failed; `retained` collects that still-owned descriptor.
+   */
+  async #postScanDigest(
+    path: string,
+    maximumBytes: number,
+    signal: AbortSignal | undefined,
+    retained: ArtifactFileCleanupFailure[],
+  ): Promise<{ readonly sha256: string; readonly bytes: number }> {
+    try {
+      return await this.#digest(path, maximumBytes, signal);
+    } catch (cause: unknown) {
+      const completed = completedDigest(cause);
+      if (completed === undefined) throw cause;
+      retained.push(completed.failure);
+      return completed.digest;
+    }
+  }
+
+  /**
    * Copy exactly the selected bytes into the private snapshot. The resident
    * copy lives only here, so it is released before the scan starts.
    */
@@ -343,10 +366,16 @@ export class DieSignatureProvider implements FileSignaturesPort {
     artifact: Report["artifact"],
     signal: AbortSignal | undefined,
     capturedOutput: AnalysisCapturedOutput,
+    retained: ArtifactFileCleanupFailure[],
   ): Promise<void> {
     let reason: string | undefined;
     try {
-      const after = await this.#digest(snapshotPath, artifact.bytes, signal);
+      const after = await this.#postScanDigest(
+        snapshotPath,
+        artifact.bytes,
+        signal,
+        retained,
+      );
       if (after.sha256 !== artifact.sha256)
         reason = "The private DiE snapshot changed during the scan.";
     } catch (cause: unknown) {
@@ -369,8 +398,14 @@ export class DieSignatureProvider implements FileSignaturesPort {
     file: ExecutedFile,
     signal: AbortSignal | undefined,
     capturedOutput: AnalysisCapturedOutput,
+    retained: ArtifactFileCleanupFailure[],
   ): Promise<void> {
-    const after = await this.#digest(file.path, DIE_LIMITS.toolBytes, signal);
+    const after = await this.#postScanDigest(
+      file.path,
+      DIE_LIMITS.toolBytes,
+      signal,
+      retained,
+    );
     if (after.sha256 !== file.sha256)
       throw new AnalysisOutputError(
         OPERATION,
@@ -393,11 +428,18 @@ export class DieSignatureProvider implements FileSignaturesPort {
     let phase: DiePhase = "configuration";
     let runtime: OwnedCommandRuntime | undefined;
     let capturedOutput: AnalysisCapturedOutput | undefined;
-    // Once DiE's output parses: what cancellation during REA's post-scan reads
-    // returns, naming the reads it had not confirmed.
-    let cancelledAfterScan:
-      | (() => FileSignaturesExecution | undefined)
+    // Once DiE's output is interpreted: what cancellation during REA's
+    // post-scan reads keeps. A valid document keeps its detections, naming the
+    // reads not yet confirmed; an invalid one keeps its known output error.
+    let afterScan:
+      | {
+          readonly kind: "valid";
+          readonly execution: () => FileSignaturesExecution | undefined;
+        }
+      | { readonly kind: "invalid"; readonly error: AnalysisError }
       | undefined;
+    // Completed post-scan reads whose descriptor close failed.
+    const retained: ArtifactFileCleanupFailure[] = [];
     let result: Result<FileSignaturesExecution, AnalysisError>;
     try {
       if (signal?.aborted)
@@ -588,35 +630,62 @@ export class DieSignatureProvider implements FileSignaturesPort {
         SNAPSHOT_READ,
         ...executed.map(({ label }) => label),
       ]);
-      if (produced.ok && produced.value.document.ok) {
-        const output = produced.value;
-        const detected = produced.value.document.value;
-        cancelledAfterScan = () => {
-          const report = fileSignaturesSchema.safeParse(
-            reportOf(output, detected, null),
-          );
-          return report.success
-            ? executionOf(report.data, cancelledPostScan([...unconfirmed]))
-            : undefined;
-        };
-      }
-      await this.#verifySnapshot(snapshotPath, artifact, signal, scanOutput);
+      const interpreted: Result<
+        { output: ProducedResult; document: DieResultDocument },
+        AnalysisError
+      > = !produced.ok
+        ? produced
+        : produced.value.document.ok
+          ? ok({
+              output: produced.value,
+              document: produced.value.document.value,
+            })
+          : err(
+              new AnalysisOutputError(
+                OPERATION,
+                produced.value.document.error,
+                { capturedOutput: scanOutput },
+              ),
+            );
+      afterScan = interpreted.ok
+        ? {
+            kind: "valid",
+            execution: () => {
+              const report = fileSignaturesSchema.safeParse(
+                reportOf(
+                  interpreted.value.output,
+                  interpreted.value.document,
+                  null,
+                ),
+              );
+              return report.success
+                ? executionOf(report.data, cancelledPostScan([...unconfirmed]))
+                : undefined;
+            },
+          }
+        : { kind: "invalid", error: interpreted.error };
+      await this.#verifySnapshot(
+        snapshotPath,
+        artifact,
+        signal,
+        scanOutput,
+        retained,
+      );
       unconfirmed.delete(SNAPSHOT_READ);
       for (const file of executed) {
-        await this.#verifyUnchanged(file, signal, scanOutput);
+        await this.#verifyUnchanged(file, signal, scanOutput, retained);
         unconfirmed.delete(file.label);
       }
-      if (!produced.ok) throw produced.error;
-      const { document } = produced.value;
-      if (!document.ok)
-        throw new AnalysisOutputError(OPERATION, document.error, {
-          capturedOutput: scanOutput,
-        });
-      const after = await this.#digestAfter(input, signal);
+      if (!interpreted.ok) throw interpreted.error;
+      const after = await this.#digestAfter(input, signal, retained);
       result = ok(
         executionOf(
           fileSignaturesSchema.parse(
-            reportOf(produced.value, document.value, after.sha256),
+            reportOf(
+              interpreted.value.output,
+              interpreted.value.document,
+              after.sha256,
+            ),
           ),
           after.unknown === undefined ? [] : [after.unknown],
         ),
@@ -624,15 +693,24 @@ export class DieSignatureProvider implements FileSignaturesPort {
     } catch (cause: unknown) {
       const failure = dieFailure(cause, phase, input.path, timeoutMs);
       runtime?.retainCommandFailure(cause, failure);
-      // Cancellation during a post-scan read keeps the detections DiE produced.
-      const parsed =
-        failure instanceof AnalysisCancelledError
-          ? cancelledAfterScan?.()
-          : undefined;
-      if (parsed !== undefined)
-        failure.retainPartialObservation(
-          createAnalysisExecutionEvidence(OPERATION, input, parsed, "observed"),
-        );
+      // Cancellation during a post-scan read keeps what DiE's output established.
+      if (failure instanceof AnalysisCancelledError) {
+        if (afterScan?.kind === "invalid")
+          failure.retainSecondaryFailure(afterScan.error, {
+            scan_output_error: projectAnalysisError(afterScan.error),
+          });
+        const parsed =
+          afterScan?.kind === "valid" ? afterScan.execution() : undefined;
+        if (parsed !== undefined)
+          failure.retainPartialObservation(
+            createAnalysisExecutionEvidence(
+              OPERATION,
+              input,
+              parsed,
+              "observed",
+            ),
+          );
+      }
       result = err(
         failure instanceof AnalysisOutputError &&
           failure.capturedOutput === undefined &&
@@ -650,19 +728,21 @@ export class DieSignatureProvider implements FileSignaturesPort {
     }
     return runtime === undefined
       ? result
-      : this.#releaseRuntime(runtime, result, input, signal);
+      : this.#releaseRuntime(runtime, result, retained, input, signal);
   }
 
   /** A post-scan read failure leaves the digest unknown rather than failing the scan. */
   async #digestAfter(
     input: DetectFileSignaturesInput,
     signal: AbortSignal | undefined,
+    retained: ArtifactFileCleanupFailure[],
   ): Promise<{ sha256: string | null; unknown: string | undefined }> {
     try {
-      const after = await this.#digest(
+      const after = await this.#postScanDigest(
         input.path,
         input.max_file_bytes,
         signal,
+        retained,
       );
       return { sha256: after.sha256, unknown: undefined };
     } catch (cause: unknown) {
@@ -679,21 +759,27 @@ export class DieSignatureProvider implements FileSignaturesPort {
     }
   }
 
-  /** Release the private runtime after every command; cleanup failure retains completed observations. */
+  /**
+   * Release the private runtime after every command. A completed result keeps
+   * its Evidence when a post-scan descriptor close or root removal fails.
+   */
   async #releaseRuntime(
     runtime: OwnedCommandRuntime,
     outcome: Result<FileSignaturesExecution, AnalysisError>,
+    retained: readonly ArtifactFileCleanupFailure[],
     input: DetectFileSignaturesInput,
     signal: AbortSignal | undefined,
   ): Promise<Result<FileSignaturesExecution, AnalysisError>> {
     let result = outcome;
+    // A descriptor still held inside the runtime keeps the runtime too.
     const cleanup = await this.#resources.release({
       kind: "lease",
       resource: runtime.path,
       lease: runtime.lease,
     });
+    const incomplete = retained.length > 0 || cleanup.kind === "failed";
     const partialObservation =
-      result.ok && (signal?.aborted === true || cleanup.kind === "failed")
+      result.ok && (signal?.aborted === true || incomplete)
         ? createAnalysisExecutionEvidence(
             OPERATION,
             input,
@@ -710,24 +796,45 @@ export class DieSignatureProvider implements FileSignaturesPort {
           ...(partialObservation === undefined ? {} : { partialObservation }),
         }),
       );
-    if (cleanup.kind !== "failed") return result;
+    if (!incomplete) return result;
+    const causes = [
+      ...retained,
+      ...(cleanup.kind === "failed" ? [cleanup.cause] : []),
+    ];
     const failure = new ProviderCleanupError(
       DIE_PROVIDER_IDENTITY.id,
-      [runtime.path],
+      [
+        ...new Set([
+          ...retained.flatMap((read) => read.cleanup?.resources ?? []),
+          ...(cleanup.kind === "failed" ? [runtime.path] : []),
+        ]),
+      ],
       {
-        reason:
-          cleanup.cause instanceof Error
-            ? cleanup.cause.message
-            : String(cleanup.cause),
+        reason: [
+          ...retained.map((read) => read.cleanup?.reason ?? read.message),
+          ...(cleanup.kind === "failed"
+            ? [
+                cleanup.cause instanceof Error
+                  ? cleanup.cause.message
+                  : String(cleanup.cause),
+              ]
+            : []),
+        ].join("; "),
         previous_error: result.ok ? null : projectAnalysisError(result.error),
       },
       {
         operation: OPERATION,
-        cause: cleanup.cause,
+        cause:
+          causes.length === 1
+            ? causes[0]
+            : new AggregateError(causes, "DiE cleanup remains incomplete"),
         ...(partialObservation === undefined ? {} : { partialObservation }),
       },
     );
-    new AnalysisCleanupLeaseGroup(failure, [runtime.lease]);
+    new AnalysisCleanupLeaseGroup(failure, [
+      ...retained.map((read) => read.cleanupLease),
+      ...(cleanup.kind === "failed" ? [runtime.lease] : []),
+    ]);
     return err(
       result.ok
         ? failure
@@ -739,6 +846,30 @@ export class DieSignatureProvider implements FileSignaturesPort {
     );
   }
 }
+
+const completedDigestSchema = z.strictObject({
+  sha256: sha256Schema,
+  bytes: z.int().nonnegative(),
+});
+
+/**
+ * The digest a post-scan read completed before only its descriptor close
+ * failed. readStableArtifact builds the result inside descriptor ownership.
+ */
+const completedDigest = (
+  cause: unknown,
+):
+  | {
+      readonly failure: ArtifactFileCleanupFailure;
+      readonly digest: { readonly sha256: string; readonly bytes: number };
+    }
+  | undefined => {
+  if (!(cause instanceof ArtifactFileCleanupFailure)) return undefined;
+  const outcome = cause.fileCleanupFailure.outcome;
+  if (outcome.kind !== "completed") return undefined;
+  const digest = completedDigestSchema.safeParse(outcome.value);
+  return digest.success ? { failure: cause, digest: digest.data } : undefined;
+};
 
 /** The requested upstream scan options, in a fixed order. */
 const scanOptions = (input: DetectFileSignaturesInput): Report["scan"] => ({
