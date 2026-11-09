@@ -1771,6 +1771,18 @@ explicit 256 MiB SDK receive buffer, matching server `REA_MCP_MAX_RESPONSE_BYTES
 and five-minute request timeout. Ordinary
 MCP fixtures retain the pinned SDK defaults.
 
+### Detect It Easy signatures
+
+On Linux x64, set `REA_VERIFY_DIE_PYTHON` to an absolute Python executable with
+die-python 0.5.0 and util-linux `prlimit` at `/usr/bin/prlimit`, then run
+`npm run test:focused -- tests/boundary/providers/dieSignatures.test.ts`. The
+real cases identify a host ELF and a generated PE image with a ZIP overlay
+through the provider, check snapshot release and recursive file parts, and
+exercise a real command deadline and a Python without die-python. Without the
+variable they skip by name; configuration and file-admission controls still run.
+No real `diec` lane exists yet: its version gate uses an authored stand-in, and
+its argument and output framing are derived from DiE 3.09 source only.
+
 ### Offline EVM interface
 
 `npm run verify:evm:interface` requires Linux x64, an absolute

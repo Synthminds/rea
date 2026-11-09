@@ -253,6 +253,14 @@ explicit path or endpoint and do not need it.
   build-id or ABI-tag fields. A missing table is observed absence of those
   declarations, not proof the image never carried notes. See the
   [ELF notes guide](https://github.com/morluto/rea/blob/main/docs/elf-notes.md).
+- File type, compiler, linker, library and packer/protector signature leads:
+  `detect_file_signatures` with the explicit local file and caller-supplied
+  Detect It Easy (`REA_DIE_COMMAND` for diec 3.09 or `REA_DIE_PYTHON` for
+  die-python 0.5.0) on Linux x64. Report detections as DiE's leads with its
+  heuristic marker, never as proof of a component or of maliciousness or safety;
+  a missing detection proves nothing. It detects protections only: do not
+  propose unpacking or bypass steps. See the
+  [file signatures guide](https://github.com/morluto/rea/blob/main/docs/file-signatures.md).
 - CPython 3.7–3.13 `.pyc` header, nested marshal code objects and bytecode
   identity: `inspect_python_pyc` with the explicit local file. This built-in
   target-free inspection requires no Python installation. Preserve magic,

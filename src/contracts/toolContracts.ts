@@ -14,6 +14,7 @@ import { ERLANG_BEAM_TOOL_CONTRACTS } from "./erlang/beamToolContracts.js";
 import { SQLITE_TOOL_CONTRACTS } from "./sqlite/sqliteToolContracts.js";
 import { ANALYSIS_VIEW_TOOL_CONTRACTS } from "./analysisViewToolContracts.js";
 import { BINARY_DIAGNOSTICS_TOOL_CONTRACTS } from "./native/binaryDiagnosticsToolContracts.js";
+import { FILE_SIGNATURE_TOOL_CONTRACTS } from "./native/fileSignatureToolContracts.js";
 import { NATIVE_TOOL_CONTRACTS } from "./native/nativeToolContracts.js";
 import { ARTIFACT_TOOL_CONTRACTS } from "./artifactToolContracts.js";
 import { MANAGED_TOOL_CONTRACTS } from "./managed/managedToolContracts.js";
@@ -48,6 +49,7 @@ export const TOOL_CONTRACTS = [
   ...ENHANCED_TOOL_CONTRACTS,
   ...NATIVE_TOOL_CONTRACTS,
   ...BINARY_DIAGNOSTICS_TOOL_CONTRACTS,
+  ...FILE_SIGNATURE_TOOL_CONTRACTS,
   ...ANALYSIS_VIEW_TOOL_CONTRACTS,
   ...ARTIFACT_TOOL_CONTRACTS,
   ...DESKTOP_APPLICATION_TOOL_CONTRACTS,

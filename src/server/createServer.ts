@@ -23,15 +23,18 @@ import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { captureProviderEnvironment } from "./providerEnvironment.js";
 import {
   createElfNotesService,
+  createFileSignaturesService,
   createPeCertificatesService,
   createNativeExportsService,
   createPeResourcesService,
 } from "../composition/binaryDiagnostics.js";
 import type { ElfNotesService } from "../application/binaryDiagnostics/ElfNotesService.js";
+import type { FileSignaturesService } from "../application/binaryDiagnostics/FileSignaturesService.js";
 import type { PeCertificatesService } from "../application/binaryDiagnostics/PeCertificatesService.js";
 import type { PeResourcesService } from "../application/binaryDiagnostics/PeResourcesService.js";
 import type { NativeExportsService } from "../application/binaryDiagnostics/NativeExportsService.js";
 import { registerElfNotesTool } from "./registerElfNotesTool.js";
+import { registerFileSignaturesTool } from "./registerFileSignaturesTool.js";
 import { registerPeCertificatesTool } from "./registerPeCertificatesTool.js";
 import { registerPeResourcesTool } from "./registerPeResourcesTool.js";
 import { registerNativeExportsTool } from "./registerNativeExportsTool.js";
@@ -77,6 +80,7 @@ import {
   createByteEntropyService,
   createBinaryLayoutService,
   pwntoolsHostSupported,
+  dieHostSupported,
 } from "../composition/binaryDiagnostics.js";
 import type { BinaryLayoutService } from "../application/binaryDiagnostics/BinaryLayoutService.js";
 import { createCatalogIdentity } from "../catalogIdentity.js";
@@ -219,6 +223,7 @@ export interface CreateServerOptions {
   readonly sqliteDatabase?: SqliteDatabaseService;
   readonly logger?: Logger;
   readonly binaryLayout?: BinaryLayoutService;
+  readonly fileSignatures?: FileSignaturesService;
   readonly goBinary?: GoBinaryService;
   readonly il2cppMetadata?: Il2cppMetadataService;
   readonly rustBinary?: RustBinaryService;
@@ -279,6 +284,7 @@ const installSessionToolAvailability = (
     signalRecording: sigrokHostSupported(platform),
     evmInterface: evmHostSupported(platform, arch),
     pwntools: pwntoolsHostSupported(platform, arch),
+    fileSignatures: dieHostSupported(platform, arch),
     firmware: firmwareHostSupported(platform),
     javascriptRecovery: wakaruHostSupported(platform, arch),
   };
@@ -311,6 +317,10 @@ const installSessionToolAvailability = (
         options.recordedCrash,
         verifiedHost.pwntools,
       ),
+      fileSignatures: outsideVerifiedHost(
+        options.fileSignatures,
+        verifiedHost.fileSignatures,
+      ),
       firmwareInspection: outsideVerifiedHost(
         options.firmwareAnalysis,
         verifiedHost.firmware,
@@ -342,6 +352,11 @@ const installSessionToolAvailability = (
         isAbsolute(environment.REA_BROWSER_EXECUTABLE ?? ""),
       recordedCrashEnabled: options.recordedCrash !== undefined || pwntools,
       binaryLayoutEnabled: options.binaryLayout !== undefined || pwntools,
+      fileSignaturesEnabled:
+        options.fileSignatures !== undefined ||
+        (verifiedHost.fileSignatures &&
+          (isAbsolute(environment.REA_DIE_COMMAND ?? "") ||
+            isAbsolute(environment.REA_DIE_PYTHON ?? ""))),
       firmwareInspectionEnabled:
         options.firmwareAnalysis !== undefined ||
         (verifiedHost.firmware &&
@@ -461,6 +476,8 @@ export const createServer = (
   const peResources = createPeResourcesService();
   const nativeExports = createNativeExportsService();
   const elfNotes = createElfNotesService();
+  const fileSignatures =
+    options.fileSignatures ?? createFileSignaturesService(environment);
   const peCertificates = createPeCertificatesService();
   const electronFuses = options.electronFuses ?? createElectronFuseService();
   const pythonPyc = options.pythonPyc ?? createPythonPycService();
@@ -572,6 +589,7 @@ export const createServer = (
       peResources.close(),
       nativeExports.close(),
       elfNotes.close(),
+      fileSignatures.close(),
       peCertificates.close(),
       electronFuses.close(),
       pythonPyc.close(),
@@ -640,6 +658,7 @@ export const createServer = (
     peResources,
     nativeExports,
     elfNotes,
+    fileSignatures,
     peCertificates,
     electronFuses,
     pythonPyc,
@@ -877,6 +896,7 @@ const registerConfiguredAnalysisTools = (
     peResources,
     nativeExports,
     elfNotes,
+    fileSignatures,
     peCertificates,
     pythonPyc,
     webNetworkCapture,
@@ -939,6 +959,13 @@ const registerConfiguredAnalysisTools = (
   registerElfNotesTool(
     server,
     elfNotes,
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
+  );
+  registerFileSignaturesTool(
+    server,
+    fileSignatures,
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
@@ -1104,6 +1131,7 @@ interface ServerToolContext extends ReturnType<typeof createSessionRecorders> {
   readonly peResources: PeResourcesService;
   readonly nativeExports: NativeExportsService;
   readonly elfNotes: ElfNotesService;
+  readonly fileSignatures: FileSignaturesService;
   readonly peCertificates: PeCertificatesService;
   readonly electronFuses: ElectronFuseService;
   readonly pythonPyc: PythonPycService;

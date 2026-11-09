@@ -25,6 +25,7 @@ export interface SessionAvailabilityDefaults {
     | "javascriptRecoveryEnabled"
     | "webModuleResolutionEnabled"
     | "binaryLayoutEnabled"
+    | "fileSignaturesEnabled"
     | "recordedCrashEnabled"
     | "firmwareInspectionEnabled"
     | "firmwareExtractionEnabled"
@@ -64,6 +65,8 @@ export const sessionAvailabilityPolicy = (
         defaults.optionalFeatures?.recordedCrashEnabled ?? false,
       binaryLayoutEnabled:
         defaults.optionalFeatures?.binaryLayoutEnabled ?? false,
+      fileSignaturesEnabled:
+        defaults.optionalFeatures?.fileSignaturesEnabled ?? false,
       firmwareInspectionEnabled:
         defaults.optionalFeatures?.firmwareInspectionEnabled ?? false,
       firmwareExtractionEnabled:

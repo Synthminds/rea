@@ -62,6 +62,7 @@ export const HOST_RESTRICTED_FEATURES = [
   "firmwareInspection",
   "firmwareExtraction",
   "javascriptRecovery",
+  "fileSignatures",
 ] as const;
 export type HostRestrictedFeature = (typeof HOST_RESTRICTED_FEATURES)[number];
 
@@ -79,6 +80,7 @@ export type AvailabilityPolicy = {
   readonly processCaptureEnabled: boolean;
   readonly optionalProviderLoadFailures?: OptionalProviderLoadFailures;
   readonly binaryLayoutEnabled?: boolean;
+  readonly fileSignaturesEnabled?: boolean;
   readonly recordedCrashEnabled?: boolean;
   readonly firmwareInspectionEnabled?: boolean;
   readonly firmwareExtractionEnabled?: boolean;
@@ -491,6 +493,13 @@ const workflowAvailabilityFor = ({
       "binaryLayout",
       policy.binaryLayoutEnabled,
       "On Linux x64, set absolute REA_PWNTOOLS_PYTHON to caller-supplied Python with pwntools 4.15.0. No active binary target is required.",
+    );
+  if (name === "detect_file_signatures")
+    return hostRestrictedAvailability(
+      policy,
+      "fileSignatures",
+      policy.fileSignaturesEnabled,
+      "On Linux x64, set absolute REA_DIE_COMMAND to caller-supplied diec 3.09 or REA_DIE_PYTHON to Python with die-python 0.5.0, plus util-linux prlimit (REA_DIE_PRLIMIT_COMMAND, default /usr/bin/prlimit). No active binary target is required; the tool is checked at execution.",
     );
   if (name === "inspect_packet_capture" || name === "inspect_packet_fields")
     return hostRestrictedAvailability(
