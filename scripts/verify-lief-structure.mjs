@@ -39,6 +39,7 @@ const formats = { elf: await available("cc"), pe: false, macho: false };
 const skipped = {};
 if (!formats.elf) throw new Error("verify:lief requires cc for ELF fixtures.");
 
+const RICH_KEY = 0x5eed1e1f;
 const root = await PrivateRuntimeRoot.create({ prefix: "rea-lief-verifier-" });
 const fixtures = join(root.path, "fixtures");
 const temporary = join(root.path, "tmp");
@@ -85,6 +86,15 @@ await build("cc", [
   "-ldemo",
   "-Wl,-rpath,$ORIGIN",
 ]);
+// Legacy DT_RPATH instead of DT_RUNPATH.
+await build("cc", [
+  "-o",
+  "app.rpath",
+  "app.c",
+  "-L.",
+  "-ldemo",
+  "-Wl,--disable-new-dtags,-rpath,/opt/demo",
+]);
 // Optional formats are reported as unverified when their toolchain is absent.
 try {
   await source(
@@ -112,6 +122,52 @@ try {
     "app_pe.c",
     "demo.lib",
   ]);
+  // A delay-loaded import. The helper symbol is never called; nothing runs.
+  await source(
+    "app_delay.c",
+    "__declspec(dllimport) int demo_add(int, int);\nvoid *__delayLoadHelper2(void *a, void *b) { return 0; }\nint mainCRTStartup(void) { return demo_add(1, 2); }\n",
+  );
+  await build("clang", [
+    ...pe,
+    "-Wl,/subsystem:console",
+    "-Wl,/delayload:demo.dll",
+    "-o",
+    "app_delay.exe",
+    "app_delay.c",
+    "demo.lib",
+  ]);
+  // A forwarded export.
+  await source("forward.c", "int forward_local(void) { return 1; }\n");
+  await build("clang", [
+    ...pe,
+    "-shared",
+    "-Wl,/noentry",
+    "-Wl,/export:forward_add=demo.demo_add",
+    "-o",
+    "forward.dll",
+    "forward.c",
+  ]);
+  // lld writes no rich header; place a known one in the DOS stub before e_lfanew.
+  const image = await readFile(join(fixtures, "demo.dll"));
+  const rich = [
+    0x536e6144,
+    0,
+    0,
+    0,
+    (0x0104 << 16) | 30148,
+    3,
+    (0x0102 << 16) | 30148,
+    1,
+  ];
+  const header = Buffer.alloc(rich.length * 4 + 8);
+  rich.forEach((word, index) =>
+    header.writeUInt32LE((word ^ RICH_KEY) >>> 0, index * 4),
+  );
+  header.write("Rich", rich.length * 4, "latin1");
+  header.writeUInt32LE(RICH_KEY, rich.length * 4 + 4);
+  assert.ok(0x40 + header.length <= image.readUInt32LE(0x3c));
+  header.copy(image, 0x40);
+  await writeFile(join(fixtures, "rich.dll"), image);
   formats.pe = true;
 } catch (cause) {
   skipped.pe = `PE fixture build failed (clang with lld-link): ${cause.message.split("\n")[0]}`;
@@ -201,6 +257,9 @@ const path = (name) => join(fixtures, name);
   assert.equal(result(app.value).format, "elf");
   assert.ok(summary.libraries.includes("libdemo.so"));
   assert.deepEqual(summary.elf.runpath, ["$ORIGIN"]);
+  const legacy = result((await cli(path("app.rpath"))).value).summary.elf;
+  assert.deepEqual(legacy.rpath, ["/opt/demo"]);
+  assert.equal(legacy.runpath, null);
   assert.ok(summary.elf.interpreter !== null && summary.entrypoint !== null);
   const library = result((await cli(path("libdemo.so"))).value).summary;
   assert.equal(library.elf.soname, "libdemo.so");
@@ -256,6 +315,38 @@ if (formats.pe) {
   );
   const segments = result((await cli(path("app.exe"), "segments")).value);
   assert.equal(segments.coverage.applicable, false);
+  const delayed = result(
+    (await cli(path("app_delay.exe"), "imports")).value,
+  ).imports;
+  assert.ok(
+    delayed.items.some(
+      (row) =>
+        row.name === "demo_add" &&
+        row.library === "demo.dll" &&
+        row.kind === "delay-import" &&
+        row.address === null,
+    ),
+  );
+  const forwarded = result(
+    (await cli(path("forward.dll"), "exports")).value,
+  ).exports;
+  assert.ok(
+    forwarded.items.some(
+      (row) =>
+        row.name === "forward_add" &&
+        row.forwarder === "demo.demo_add" &&
+        row.address === null,
+    ),
+  );
+  const richHeader = result((await cli(path("rich.dll"))).value).summary.pe
+    .rich_header;
+  assert.equal(richHeader.key, `0x${RICH_KEY.toString(16)}`);
+  assert.deepEqual(
+    richHeader.entries
+      .map((entry) => `${entry.id}:${entry.build_id}:${entry.count}`)
+      .sort(),
+    ["258:30148:1", "260:30148:3"],
+  );
   report.formats.pe = { verified: true, exports: exports.total };
 } else
   report.formats.pe = {
