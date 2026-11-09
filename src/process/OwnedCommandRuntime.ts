@@ -5,12 +5,15 @@ import {
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
-import type { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
-import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
-import { OwnedCommandFailure } from "../process/OwnedCommand.js";
+import type { PrivateRuntimeRoot } from "./PrivateRuntimeRoot.js";
+import type { ProviderProcessSupervisor } from "./ProviderProcess.js";
+import { OwnedCommandFailure } from "./OwnedCommand.js";
 
-/** A private runtime cannot be removed until every retained command has stopped. */
-export class WabtRuntime {
+/**
+ * A private runtime cannot be removed until every retained command has stopped.
+ * `label` names the caller-supplied tool in cleanup diagnostics.
+ */
+export class OwnedCommandRuntime {
   readonly lease: AnalysisCleanupLease;
   readonly path: string;
   readonly #commands = new Map<
@@ -19,7 +22,7 @@ export class WabtRuntime {
   >();
   #unknownCommand: string | undefined;
 
-  constructor(root: Pick<PrivateRuntimeRoot, "path" | "close">) {
+  constructor(root: Pick<PrivateRuntimeRoot, "path" | "close">, label: string) {
     this.path = root.path;
     this.lease = new AnalysisCleanupLease(async () => {
       const pending = [...this.#commands.values()].filter(
@@ -28,12 +31,12 @@ export class WabtRuntime {
       if (pending.length > 0 || this.#unknownCommand !== undefined)
         throw new ArtifactReaderFailure(
           "unavailable",
-          "WABT commands must stop before runtime removal",
+          `${label} commands must stop before runtime removal`,
           {
             cleanup: {
               reason:
                 this.#unknownCommand ??
-                "WABT command cleanup remains incomplete",
+                `${label} command cleanup remains incomplete`,
               resources: [
                 ...new Set([
                   root.path,

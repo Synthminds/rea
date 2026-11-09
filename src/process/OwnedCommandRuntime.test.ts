@@ -7,15 +7,26 @@ import {
   ArtifactResourceRetryFailure,
 } from "../artifacts/ArtifactResourceScope.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
-import { OwnedCommandFailure } from "../process/OwnedCommand.js";
-import { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
-import { WabtRuntime } from "./WabtRuntime.js";
-import { wabtFailure } from "./WabtFailures.js";
+import { OwnedCommandFailure } from "./OwnedCommand.js";
+import { ProviderProcessSupervisor } from "./ProviderProcess.js";
+import { OwnedCommandRuntime } from "./OwnedCommandRuntime.js";
+
+/** The cleanup failure a provider reports for a command it could not stop. */
+const commandFailure = (cause: OwnedCommandFailure) =>
+  new ProviderCleanupError(
+    "owned-command",
+    cause.resources,
+    { reason: cause.cleanupFailure },
+    { operation: "owned_command", cause },
+  );
 
 it("retries exact command owners before runtime removal and preserves mixed outcomes", async () => {
   const resources = new ArtifactResourceScope();
   const close = vi.fn(async () => undefined);
-  const runtime = new WabtRuntime({ path: "owned-runtime", close });
+  const runtime = new OwnedCommandRuntime(
+    { path: "owned-runtime", close },
+    "Tool",
+  );
   const controls = [true, false].map((allowed, index) => {
     const process = Object.assign(new EventEmitter(), {
       stdout: new PassThrough(),
@@ -45,12 +56,12 @@ it("retries exact command owners before runtime removal and preserves mixed outc
       [`command-${String(index)}`],
       owner,
     );
-    const error = wabtFailure(cause, "producer", "input.wasm");
+    const error = commandFailure(cause);
     runtime.retainCommandFailure(cause, error, resources);
     return { owner, state, stop, error };
   });
   const rootError = new ProviderCleanupError(
-    "wabt-artifact",
+    "owned-command",
     [runtime.path],
     {},
   );
@@ -74,7 +85,7 @@ it("retries exact command owners before runtime removal and preserves mixed outc
         cause.cleanupLeases === undefined
       )
         throw cause;
-      aggregate = new ProviderCleanupError("wabt-artifact", [], {});
+      aggregate = new ProviderCleanupError("owned-command", [], {});
       new AnalysisCleanupLeaseGroup(aggregate, cause.cleanupLeases);
     }
     expect(controls[0]?.error.cleanupIncomplete).toBe(false);
@@ -101,7 +112,10 @@ it("retries exact command owners before runtime removal and preserves mixed outc
 
 it("keeps runtime removal unconfirmed when a failed command supplies no ownership capability", async () => {
   const close = vi.fn(async () => undefined);
-  const runtime = new WabtRuntime({ path: "owned-runtime", close });
+  const runtime = new OwnedCommandRuntime(
+    { path: "owned-runtime", close },
+    "Tool",
+  );
   const cause = new OwnedCommandFailure(
     "process",
     "unconfirmed command",
@@ -110,10 +124,12 @@ it("keeps runtime removal unconfirmed when a failed command supplies no ownershi
   );
   runtime.retainCommandFailure(
     cause,
-    wabtFailure(cause, "producer", "input.wasm"),
+    commandFailure(cause),
     new ArtifactResourceScope(),
   );
-  await expect(runtime.lease.release()).rejects.toThrow("commands must stop");
+  await expect(runtime.lease.release()).rejects.toThrow(
+    "Tool commands must stop",
+  );
   expect(runtime.lease.released).toBe(false);
   expect(close).not.toHaveBeenCalled();
 });

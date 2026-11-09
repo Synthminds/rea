@@ -40,7 +40,7 @@ import {
 import { err, ok, type Result } from "../domain/result.js";
 import { runOwnedCommand } from "../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
-import { WabtRuntime } from "./WabtRuntime.js";
+import { OwnedCommandRuntime } from "../process/OwnedCommandRuntime.js";
 import {
   WABT_PROVIDER_IDENTITY,
   WABT_LIMITS,
@@ -108,7 +108,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
     input: InspectWasmArtifactInput,
     options?: ExecutionOptions,
   ): Promise<Result<WasmArtifactExecution, AnalysisError>> {
-    let runtime: WabtRuntime | undefined;
+    let runtime: OwnedCommandRuntime | undefined;
     let phase: "configuration" | "artifact" | "producer" = "configuration";
     let result: Result<WasmArtifactExecution, AnalysisError>;
     let capturedOutput: AnalysisCapturedOutput | undefined;
@@ -156,7 +156,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
         });
       }
       const root = await this.createRuntime();
-      runtime = new WabtRuntime(root);
+      runtime = new OwnedCommandRuntime(root, "WABT");
       const snapshotPath = join(root.path, "module.wasm");
       let snapshotHash: string | undefined;
       const verifySnapshot = async () => {
