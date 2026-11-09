@@ -8,6 +8,7 @@ import {
 } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import { copyStableArtifact } from "../artifacts/copyStableArtifact.js";
 import {
   digestStableArtifact,
   readStableArtifact,
@@ -143,6 +144,22 @@ export class ArtifactAnalysisResources {
       maximumBytes,
       signal,
       undefined,
+      this.#artifacts.scope,
+    );
+  }
+
+  /** Owned streaming copy that must reproduce an earlier stable digest. */
+  copy(
+    source: string,
+    destination: string,
+    expected: { readonly sha256: string; readonly bytes: number },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return copyStableArtifact(
+      source,
+      destination,
+      expected,
+      signal,
       this.#artifacts.scope,
     );
   }
