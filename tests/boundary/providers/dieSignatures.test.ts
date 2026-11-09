@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, readdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -143,17 +144,20 @@ describe.skipIf(!realDie)("real die-python 0.5.0", () => {
     expect(error._tag).toBe("AnalysisTimeoutError");
   });
 
-  it("rejects a Python without die-python as an unavailable capability", async () => {
-    const root = await createTestTempDirectory("rea-die-python-");
-    const path = join(root, "true");
-    await copyFile("/bin/true", path);
-    const error = await failure(
-      { ...process.env, REA_DIE_PYTHON: "/usr/bin/python3" },
-      { path },
-    );
-    expect(error._tag).toBe("AnalysisCapabilityUnavailableError");
-    expect(error.message).toContain("die-python");
-  });
+  it.skipIf(!existsSync("/usr/bin/python3"))(
+    "rejects a Python without die-python as an unavailable capability",
+    async () => {
+      const root = await createTestTempDirectory("rea-die-python-");
+      const path = join(root, "true");
+      await copyFile("/bin/true", path);
+      const error = await failure(
+        { ...process.env, REA_DIE_PYTHON: "/usr/bin/python3" },
+        { path },
+      );
+      expect(error._tag).toBe("AnalysisCapabilityUnavailableError");
+      expect(error.message).toContain("die-python");
+    },
+  );
 });
 
 describe.skipIf(!verifiedHost)("DiE configuration and file admission", () => {

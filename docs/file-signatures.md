@@ -59,7 +59,8 @@ The scan options map to DiE's own options: `deep_scan` (`diec -d`),
   containing part. `file_type` and `part` are DiE's labels (for example
   `PE64` / `Header`, or `ZIP` / `Overlay` under a recursive scan). `offset`
   and `size` are DiE-reported strings; a nested part can report values relative
-  to its containing part. DiE 3.09 `diec` does not report them (null).
+  to its containing part. They are null when DiE omits them, as the DiE 3.09
+  `diec` source does.
 - Each detection keeps DiE's `type`, `name`, `version` and `info`. `heuristic`
   is true when DiE marked the match `(Heuristic)`, false for an ordinary match,
   and null when DiE's label did not follow its documented rendering; `label`

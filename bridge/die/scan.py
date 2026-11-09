@@ -1,6 +1,6 @@
 """Scan one private snapshot with caller-supplied die-python; print one JSON reply.
 
-REA runs this file with `python -I` under util-linux prlimit and passes one JSON
+REA runs this file with `python -I -B` under util-linux prlimit and passes one JSON
 request argument. Only the package-bundled signature database is loaded: the
 request carries no database path, script or custom signature location. Native
 DiE output is redirected to stderr so stdout carries only the reply line.

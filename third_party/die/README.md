@@ -27,7 +27,7 @@ indented JSON document) are derived from the DIE-engine 3.09 console source
 (`scanitemmodel.cpp`). They have not been verified against a real `diec` binary.
 
 `die-python` must report package `0.5.0` and DiE `3.09`. REA runs its own
-`bridge/die/scan.py` with `python -I`; the bridge loads only `die.database_path`,
+`bridge/die/scan.py` with `python -I -B`; the bridge loads only `die.database_path`,
 digests that database's sorted file records, and calls `die.scan_file` with
 `ScanFlags.RESULT_AS_JSON` and the caller's flags.
 

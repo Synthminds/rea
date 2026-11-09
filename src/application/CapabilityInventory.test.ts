@@ -770,6 +770,7 @@ const HOST_RESTRICTED_TOOLS = [
   ["inspect_signal_decoders", "signalRecording", "signalRecordingEnabled"],
   ["inspect_evm_interface", "evmInterface", "evmInterfaceEnabled"],
   ["inspect_binary_layout", "binaryLayout", "binaryLayoutEnabled"],
+  ["detect_file_signatures", "fileSignatures", "fileSignaturesEnabled"],
   ["inspect_recorded_crash", "recordedCrash", "recordedCrashEnabled"],
   [
     "inspect_firmware_regions",

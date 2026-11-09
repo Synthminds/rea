@@ -345,7 +345,9 @@ export class DieSignatureProvider implements FileSignaturesPort {
               snapshotPath,
             ]
           : [
+              // Isolated mode, and no bytecode caches in the caller's environment.
               "-I",
+              "-B",
               fileURLToPath(BRIDGE),
               JSON.stringify({
                 path: snapshotPath,
