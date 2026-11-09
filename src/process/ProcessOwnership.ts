@@ -95,6 +95,12 @@ export type ProcessIdentityObservation =
       readonly environmentRestriction?: LinuxEnvironmentRestriction;
       /** Kept separate from the start identity; optional for older/custom hosts. */
       readonly lifecycle?: ProcessLifecycleObservation;
+      /**
+       * Linux PF_KTHREAD from this generation's native read: a kernel thread
+       * has no user environment, so it cannot carry a run token. Absent when
+       * the host does not report it or the task is not a kernel thread.
+       */
+      readonly kernelThread?: true;
       /** Native relation facts read with this identity, never copied from a process-table row. */
       readonly relation?: ProcessNativeRelationObservation;
     }
@@ -1549,6 +1555,18 @@ const scanTokenOwnedProcesses = async (
   return { owned, failures, unverified, identities: ownedIdentities };
 };
 
+/**
+ * A kernel thread has no user address space, so no environment can carry a
+ * run token; Linux refuses its `/proc/<pid>/environ` with ESRCH. Both native
+ * reads around the token read must report the same kernel-thread generation.
+ */
+const kernelThreadGeneration = (fact: ProcessOwnershipFact): boolean =>
+  fact.state === "same-generation" &&
+  fact.identityBefore.state === "readable" &&
+  fact.identityBefore.kernelThread === true &&
+  fact.identityAfter.state === "readable" &&
+  fact.identityAfter.kernelThread === true;
+
 const scanWithOwnershipEvidence = async (
   listedProcesses: readonly ProcessTableEntry[],
   runId: string,
@@ -1613,10 +1631,11 @@ const scanWithOwnershipEvidence = async (
   for (let attempt = 0; attempt < TOKEN_READ_RETRY_ATTEMPTS; attempt += 1) {
     const retryRows = facts
       .filter(
-        ({ token, identityAfter }) =>
-          token.state === "unavailable" &&
-          !processIdentityHasExited(identityAfter) &&
-          !processIdentityIsExiting(identityAfter),
+        (fact) =>
+          fact.token.state === "unavailable" &&
+          !processIdentityHasExited(fact.identityAfter) &&
+          !processIdentityIsExiting(fact.identityAfter) &&
+          !kernelThreadGeneration(fact),
       )
       .map(({ process }) => process);
     if (retryRows.length === 0) break;
@@ -1683,6 +1702,7 @@ const scanWithOwnershipEvidence = async (
         reason: "run-token-mismatch",
       });
     if (fact.token.state !== "unavailable") continue;
+    if (kernelThreadGeneration(fact)) continue;
     const relationBefore =
       fact.identityBefore.state === "readable"
         ? fact.identityBefore.relation

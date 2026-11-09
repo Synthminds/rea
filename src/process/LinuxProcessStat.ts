@@ -5,10 +5,15 @@ export interface LinuxProcessStat {
   readonly pid: number;
   readonly startTime: string;
   readonly lifecycle: ProcessLifecycle | undefined;
+  /** PF_KTHREAD: a kernel thread has no user address space or environment. */
+  readonly kernelThread: boolean | undefined;
   readonly parentPid: number;
   readonly processGroupId: number;
   readonly sessionId: number;
 }
+
+/** Linux `include/linux/sched.h` task flag for kernel threads. */
+const PF_KTHREAD = 0x00200000;
 
 /**
  * Parse the changing command field by its final `)`, then validate the native
@@ -82,6 +87,9 @@ export const parseLinuxProcessStat = (
     pid,
     startTime,
     lifecycle,
+    kernelThread: Number.isSafeInteger(flags)
+      ? (flags & PF_KTHREAD) !== 0
+      : undefined,
     parentPid,
     processGroupId,
     sessionId,
