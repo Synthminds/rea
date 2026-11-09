@@ -18,13 +18,15 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 /**
  * Descriptor faults for one of REA's own stable reads. Inert until a test arms
  * `matches`; earlier opens of the armed path (`skip`) and every other open pass
- * through unchanged.
+ * through unchanged. `onDeniedClose` runs inside the denied first close, after
+ * the read itself completed.
  */
 const fault = vi.hoisted(() => ({
   matches: undefined as ((path: string) => boolean) | undefined,
   skip: 0,
   onStat: undefined as (() => void) | undefined,
   denyFirstClose: false,
+  onDeniedClose: undefined as (() => void) | undefined,
   handles: [] as FileHandle[],
 }));
 
@@ -41,7 +43,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       }
       fault.matches = undefined;
       fault.handles.push(handle);
-      const { onStat, denyFirstClose } = fault;
+      const { onStat, denyFirstClose, onDeniedClose } = fault;
       if (onStat !== undefined) {
         const stat = handle.stat.bind(handle) as (
           options?: object,
@@ -57,6 +59,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         handle.close = async () => {
           if (!denied) {
             denied = true;
+            onDeniedClose?.();
             throw new Error("authored descriptor close denial");
           }
           await close();
@@ -101,6 +104,7 @@ beforeEach(() => {
   fault.skip = 0;
   fault.onStat = undefined;
   fault.denyFirstClose = false;
+  fault.onDeniedClose = undefined;
   fault.handles = [];
 });
 
@@ -580,6 +584,35 @@ const DIGEST_UNKNOWN =
   "The call was cancelled before REA finished reading the selected file again after the scan, so its post-scan digest is unknown.";
 
 /**
+ * Cancellation during a post-scan read keeps DiE's parsed detections, with the
+ * unread digest left unknown and every integrity read it preempted named.
+ */
+const expectUnverifiedDetections = (
+  error: AnalysisError,
+  fixture: Fixture,
+  { unconfirmed }: (typeof POST_SCAN_READS)[number],
+): void => {
+  const partial = projectAnalysisError(error).details?.partial_observation;
+  expect(partial).toMatchObject({
+    confidence: "observed",
+    normalized_result: {
+      artifact: { sha256: sha256(fixture.targetBytes) },
+      artifact_after: { sha256: null, changed: null },
+      detections: [expect.objectContaining({ name: "UPX" })],
+    },
+  });
+  const limitations = (partial as { limitations: string[] }).limitations;
+  expect(limitations).toContain(DIGEST_UNKNOWN);
+  expect(
+    limitations.filter((line) => line.includes("before REA confirmed")),
+  ).toEqual(
+    unconfirmed === null
+      ? []
+      : [expect.stringContaining(`scan: ${unconfirmed}. These`)],
+  );
+};
+
+/**
  * A completed post-scan read whose descriptor close failed: the public
  * projection is a cleanup failure carrying the complete, verified result.
  */
@@ -678,26 +711,7 @@ describe.skipIf(!supported)("DiE post-scan result reads", () => {
         cleanupIncomplete: false,
       });
       expect(error.cause).toBe(reason);
-      // DiE's parsed detections survive, with the unread digest left unknown
-      // and every integrity read the cancellation preempted named.
-      const partial = projectAnalysisError(error).details?.partial_observation;
-      expect(partial).toMatchObject({
-        confidence: "observed",
-        normalized_result: {
-          artifact: { sha256: sha256(fixture.targetBytes) },
-          artifact_after: { sha256: null, changed: null },
-          detections: [expect.objectContaining({ name: "UPX" })],
-        },
-      });
-      const limitations = (partial as { limitations: string[] }).limitations;
-      expect(limitations).toContain(DIGEST_UNKNOWN);
-      expect(
-        limitations.filter((line) => line.includes("before REA confirmed")),
-      ).toEqual(
-        entry.unconfirmed === null
-          ? []
-          : [expect.stringContaining(`scan: ${entry.unconfirmed}. These`)],
-      );
+      expectUnverifiedDetections(error, fixture, entry);
       expect(fault.handles.every((handle) => handle.fd === -1)).toBe(true);
       await expectReleased(run);
     },
@@ -782,6 +796,108 @@ describe.skipIf(!supported)("DiE post-scan result reads", () => {
       },
     });
     await expectReleased(run);
+  });
+});
+
+/**
+ * The caller aborts inside a denied post-scan close, after the read itself
+ * completed: the cancellation stays primary and the descriptor stays owned.
+ */
+describe.skipIf(!supported)("DiE abort during a failed close", () => {
+  it.each(POST_SCAN_READS)(
+    "keeps typed cancellation when the caller aborts inside the denied $read close",
+    async (entry) => {
+      const fixture = await createFixture();
+      const controller = new AbortController();
+      const reason = { authored: `cancel inside the ${entry.read} close` };
+      const run = createRun({
+        REA_DIE_PYTHON: await fixture.tool(printReply(fixture)),
+      });
+      const path = await armPostScanRead(fixture, run, entry);
+      fault.denyFirstClose = true;
+      fault.onDeniedClose = () => controller.abort(reason);
+      const error = failureOf(
+        await run.service.inspect(
+          { path: fixture.target },
+          { signal: controller.signal },
+        ),
+      );
+      expect(fault.handles).toHaveLength(1);
+      // The read completed, but the abort inside its failed close makes
+      // cancellation primary; the snapshot also keeps its runtime.
+      const runtimePath = run.runtimePaths[0] ?? "";
+      const inRuntime = entry.read === "private snapshot";
+      expect(error).toMatchObject({
+        _tag: inRuntime ? "ProviderAdapterError" : "AnalysisCancelledError",
+        cleanupIncomplete: true,
+        cleanupResources: inRuntime ? [path(), runtimePath] : [path()],
+      });
+      const primary = inRuntime ? error.cleanupPrimary : error;
+      expect(primary).toMatchObject({
+        _tag: "AnalysisCancelledError",
+        cleanupResources: [path()],
+      });
+      expect(primary?.cause).toBe(reason);
+      expectUnverifiedDetections(error, fixture, entry);
+      expect(fault.handles[0]?.fd).not.toBe(-1);
+      if (inRuntime) await expect(access(runtimePath)).resolves.toBeUndefined();
+      else await expectReleased(run);
+      await run.service.close();
+      expect(fault.handles[0]?.fd).toBe(-1);
+      await expectReleased(run);
+      expect(error).toMatchObject({
+        cleanupIncomplete: false,
+        cleanupResources: [],
+      });
+    },
+  );
+
+  it("keeps an invalid document's output error when the caller aborts inside the denied module close", async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const reason = { authored: "cancel inside the module close" };
+    // A valid bridge reply names the module; only its DiE document is invalid.
+    const reply = JSON.stringify({
+      ...(JSON.parse(fixture.reply) as object),
+      document: JSON.stringify({ detects: "none" }),
+    });
+    const run = createRun({
+      REA_DIE_PYTHON: await fixture.tool(`cat <<'REPLY'\n${reply}\nREPLY`),
+    });
+    await armPostScanRead(fixture, run, POST_SCAN_READS[3]);
+    fault.denyFirstClose = true;
+    fault.onDeniedClose = () => controller.abort(reason);
+    const error = failureOf(
+      await run.service.inspect(
+        { path: fixture.target },
+        { signal: controller.signal },
+      ),
+    );
+    expect(fault.handles).toHaveLength(1);
+    expect(error).toMatchObject({
+      _tag: "AnalysisCancelledError",
+      cleanupIncomplete: true,
+      cleanupResources: [fixture.module],
+      partialObservation: undefined,
+    });
+    expect(error.cause).toBe(reason);
+    expect(projectAnalysisError(error).details?.diagnostics).toMatchObject({
+      scan_output_error: {
+        code: "unreadable_output",
+        details: {
+          reason: "DiE result does not contain a detects array.",
+          captured_output: { stdout: `${reply}\n`, exit_code: 0 },
+        },
+      },
+    });
+    expect(fault.handles[0]?.fd).not.toBe(-1);
+    await expectReleased(run);
+    await run.service.close();
+    expect(fault.handles[0]?.fd).toBe(-1);
+    expect(error).toMatchObject({
+      cleanupIncomplete: false,
+      cleanupResources: [],
+    });
   });
 });
 

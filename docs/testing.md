@@ -1802,7 +1802,9 @@ integrity reads not yet confirmed and leaving `artifact_after` unknown; after a
 malformed bridge reply it keeps that output error instead. A failed close after
 a completed read returns the completed observation as `cleanup_incomplete` and
 keeps that descriptor, and any runtime containing it, until `close()` releases
-them. No real `diec` lane exists yet; `diec` is refused
+them. An abort inside that failed close keeps typed cancellation primary with
+the same partial, or after an invalid document its output error, and the
+descriptor until `close()`. No real `diec` lane exists yet; `diec` is refused
 at selection, and its version gate, nonzero-exit mapping and output framing are
 exercised only through a source-owned backend seam with authored stand-ins.
 

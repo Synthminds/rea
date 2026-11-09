@@ -311,7 +311,8 @@ export class DieSignatureProvider implements FileSignaturesPort {
 
   /**
    * A post-scan read that completed keeps its digest when only its descriptor
-   * close failed; `retained` collects that still-owned descriptor.
+   * close failed; `retained` collects that still-owned descriptor. A caller
+   * abort recorded during that close stays cancellation.
    */
   async #postScanDigest(
     path: string,
@@ -855,6 +856,8 @@ const completedDigestSchema = z.strictObject({
 /**
  * The digest a post-scan read completed before only its descriptor close
  * failed. readStableArtifact builds the result inside descriptor ownership.
+ * An abort that landed during that close makes the failure cancellation, as
+ * ArtifactAnalysisResources.cleanupFailure classifies it, so no digest is taken.
  */
 const completedDigest = (
   cause: unknown,
@@ -865,8 +868,9 @@ const completedDigest = (
     }
   | undefined => {
   if (!(cause instanceof ArtifactFileCleanupFailure)) return undefined;
-  const outcome = cause.fileCleanupFailure.outcome;
-  if (outcome.kind !== "completed") return undefined;
+  const { outcome, completionCancellation } = cause.fileCleanupFailure;
+  if (outcome.kind !== "completed" || completionCancellation !== undefined)
+    return undefined;
   const digest = completedDigestSchema.safeParse(outcome.value);
   return digest.success ? { failure: cause, digest: digest.data } : undefined;
 };

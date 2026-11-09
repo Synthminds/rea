@@ -120,7 +120,8 @@ are released before a result returns; cleanup that cannot finish is reported
 with its resources for retry. When a post-scan read completes but its
 descriptor cannot be closed, the completed result is returned inside
 `cleanup_incomplete`, and a descriptor inside the private runtime keeps that
-runtime until `close()` releases both.
+runtime until `close()` releases both. Cancellation during that failing close
+is still typed cancellation, as during the read, with the descriptor retained.
 
 ## Containment
 
