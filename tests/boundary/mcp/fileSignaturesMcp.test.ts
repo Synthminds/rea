@@ -1,7 +1,8 @@
-import { copyFile } from "node:fs/promises";
+import { copyFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { expect } from "vitest";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
+import { expandToolAvailability } from "../../../src/contracts/toolOutputSchemaPrimitives.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
@@ -51,6 +52,67 @@ mcpTest(
       expect(parseMcpToolError(relative).error).toMatchObject({
         code: "invalid_request",
       });
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+const fileSignaturesAvailability = async (
+  client: Awaited<ReturnType<typeof connect>>["client"],
+) =>
+  expandToolAvailability(
+    toolContract("binary_session").outputSchema.parse(
+      (await client.callTool({ name: "binary_session", arguments: {} }))
+        .structuredContent,
+    ).result.tool_availability,
+  ).find((tool) => tool.name === "detect_file_signatures");
+
+mcpTest.skipIf(process.platform !== "linux" || process.arch !== "x64")(
+  "reports REA_DIE_COMMAND as unavailable and refuses it as an unverified backend",
+  async ({ mcp }) => {
+    const root = await createTestTempDirectory("rea-die-mcp-diec-");
+    const python = join(root, "python");
+    // Authored executable: discovery and refusal must not run it.
+    await writeFile(python, "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    const available = await connect(mcp, {
+      PATH: process.env.PATH,
+      REA_DIE_PYTHON: python,
+    });
+    try {
+      expect(await fileSignaturesAvailability(available.client)).toMatchObject({
+        available: true,
+      });
+    } finally {
+      await available.session.close();
+    }
+    const { client, session } = await connect(mcp, {
+      PATH: process.env.PATH,
+      REA_DIE_COMMAND: join(root, "diec"),
+      REA_DIE_PYTHON: python,
+    });
+    try {
+      expect(await fileSignaturesAvailability(client)).toMatchObject({
+        available: false,
+        reason: "provider_missing",
+        remediation: expect.stringContaining("leave REA_DIE_COMMAND unset"),
+      });
+      const response = await client.callTool({
+        name: "detect_file_signatures",
+        arguments: { path: python },
+      });
+      expect(response.isError).toBe(true);
+      const { error } = parseMcpToolError(response);
+      expect(error).toMatchObject({
+        code: "capability_unavailable",
+        details: {
+          diagnostics: {
+            configuration_key: "REA_DIE_COMMAND",
+            admitted_backends: "die-python",
+          },
+        },
+      });
+      expect(error.message).toContain("unverified DiE backend");
     } finally {
       await session.close();
     }
