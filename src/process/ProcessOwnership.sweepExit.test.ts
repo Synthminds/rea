@@ -7,8 +7,15 @@ import {
 } from "./ProcessOwnership.js";
 import { ProcessOwnershipEvidenceOwner } from "./ProcessOwnershipEvidence.js";
 
-it.each(["absent", "zombie", "live", "unavailable"] as const)(
-  "settles a baseline candidate against its final native lifetime: %s",
+it.each([
+  "absent",
+  "zombie",
+  "live",
+  "unavailable",
+  "kernel-thread",
+  "kernel-thread-before-token",
+] as const)(
+  "settles a baseline candidate against its final native facts: %s",
   async (lifetime) => {
     const row: ProcessTableEntry = {
       pid: 910,
@@ -23,9 +30,14 @@ it.each(["absent", "zombie", "live", "unavailable"] as const)(
         return { state: "absent", reason: "not-in-snapshot" };
       if (lifetime === "unavailable")
         return { state: "unavailable", reason: "native identity denied" };
+      // A kernel thread has no environment; only a bracketed fact settles it.
+      const kernelThread =
+        lifetime === "kernel-thread" ||
+        (lifetime === "kernel-thread-before-token" && !tokenRead);
       return {
         state: "readable",
         identity: "new-generation",
+        ...(kernelThread ? { kernelThread: true as const } : {}),
         lifecycle: {
           state: "observed",
           lifecycle:
@@ -62,7 +74,11 @@ it.each(["absent", "zombie", "live", "unavailable"] as const)(
         evidenceOwner: new ProcessOwnershipEvidenceOwner(),
       },
     );
-    if (lifetime === "absent" || lifetime === "zombie")
+    if (
+      lifetime === "absent" ||
+      lifetime === "zombie" ||
+      lifetime === "kernel-thread"
+    )
       expect(result).toEqual({ cleaned: true, signaled: false });
     else
       expect(result).toMatchObject({
