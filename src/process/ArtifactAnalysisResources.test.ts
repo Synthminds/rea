@@ -1,7 +1,10 @@
 import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import { ArtifactResourceRetryFailure } from "../artifacts/ArtifactResourceScope.js";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
-import { withArtifactRegularFile } from "../artifacts/ArtifactFileOperation.js";
+import {
+  ArtifactFileCleanupFailure,
+  withArtifactRegularFile,
+} from "../artifacts/ArtifactFileOperation.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createTestTempDirectory } from "../../tests/fixtures/temporaryDirectory.js";
@@ -1070,3 +1073,268 @@ it("keeps aggregate cleanup live through partial recovery without reclosing heal
     await resources.close();
   }
 });
+
+const completedEvidence = (state: string) =>
+  createEvidence(
+    undefined,
+    { id: "fixture", name: "Fixture", version: null },
+    {
+      operation: "inspect_signal_decoders",
+      parameters: {},
+      result: { state },
+      confidence: "observed",
+    },
+  );
+
+/**
+ * Resources beside one completed read whose descriptor close stays denied until
+ * `allowDescriptorClose()`. A scope the roots do not wait on holds the
+ * descriptor, so finish() still attempts each root and either owner can release
+ * first. `closes.descriptor` counts permitted closes.
+ */
+const retainedReadFixture = async (closes: { descriptor: number }) => {
+  const descriptors = new ArtifactResourceScope();
+  const resources = new ArtifactAnalysisResources(
+    "fixture",
+    "inspect_signal_decoders",
+    readStableArtifact,
+    readLinuxResourceLimits,
+    { message: "busy", details: {} },
+  );
+  let denied = true;
+  const close = async () => {
+    denied = false;
+    await descriptors.close();
+    await resources.close();
+  };
+  const directory = await createTestTempDirectory("rea-retained-read-");
+  const path = join(directory, "descriptor");
+  await writeFile(path, "authored bytes");
+  const read: unknown = await withArtifactRegularFile(
+    path,
+    descriptors,
+    undefined,
+    async (file) => {
+      const closeFile = file.close.bind(file);
+      file.close = async () => {
+        if (denied) throw new Error("descriptor close denied");
+        closes.descriptor++;
+        await closeFile();
+      };
+      return await file.readFile();
+    },
+  ).catch((cause: unknown) => cause);
+  if (
+    !(read instanceof ArtifactFileCleanupFailure) ||
+    read.fileCleanupFailure.outcome.kind !== "completed"
+  ) {
+    await close();
+    throw new Error("Expected a completed read with a held descriptor");
+  }
+  return {
+    resources,
+    path,
+    read,
+    allowDescriptorClose: () => {
+      denied = false;
+    },
+    /** Settle a completed call that kept the read: it returns one cleanup error. */
+    finish: async () => {
+      const result = await resources.finish(
+        ok("completed"),
+        completedEvidence,
+        "inspect_signal_decoders",
+        undefined,
+        [read],
+      );
+      if (result.ok) throw new Error("Expected retained cleanup failure");
+      expect(result.error).toBeInstanceOf(ProviderCleanupError);
+      expect(result.error.cleanupPrimary).toBeUndefined();
+      expect(result.error.partialObservation).toEqual(
+        completedEvidence("completed"),
+      );
+      return result.error;
+    },
+    /** Release every owner, including whatever a failed assertion left held. */
+    close,
+  };
+};
+
+it.each([
+  ["descriptor", "root"],
+  ["root", "descriptor"],
+] as const)(
+  "resolves a retained read's cleanup error only after its descriptor and a once-denied root both release (%s first)",
+  async (first, second) => {
+    const closes = { descriptor: 0, root: 0, healthy: 0 };
+    const fixture = await retainedReadFixture(closes);
+    const { resources, path, read } = fixture;
+    try {
+      resources.retain({
+        path: "runtime-root",
+        close: async () => {
+          closes.root++;
+          if (closes.root === 1) throw new Error("root removal denied");
+        },
+      });
+      resources.retain({
+        path: "healthy-root",
+        close: async () => {
+          closes.healthy++;
+        },
+      });
+
+      const error = await fixture.finish();
+
+      expect(projectAnalysisError(error)).toMatchObject({
+        code: "cleanup_incomplete",
+        details: { resources: [path, "runtime-root"] },
+      });
+      expect(closes).toEqual({ descriptor: 0, root: 1, healthy: 1 });
+
+      // A retry that is still denied leaves both owners named.
+      await expect(read.cleanupLease.release()).rejects.toThrow(
+        "descriptor close denied",
+      );
+      expect(error).toMatchObject({
+        cleanupIncomplete: true,
+        cleanupResources: [path, "runtime-root"],
+      });
+
+      fixture.allowDescriptorClose();
+      const release = {
+        descriptor: () => read.cleanupLease.release(),
+        root: () => resources.release(),
+      };
+      await release[first]();
+      expect(error).toMatchObject({
+        cleanupIncomplete: true,
+        cleanupResources: first === "descriptor" ? ["runtime-root"] : [path],
+      });
+      expect(closes).toEqual(
+        first === "descriptor"
+          ? { descriptor: 1, root: 1, healthy: 1 }
+          : { descriptor: 0, root: 2, healthy: 1 },
+      );
+
+      // Retrying the released owner must not close it again.
+      await release[first]();
+      await release[second]();
+      expect(error).toMatchObject({
+        cleanupIncomplete: false,
+        cleanupResources: [],
+      });
+      await fixture.close();
+      expect(closes).toEqual({ descriptor: 1, root: 2, healthy: 1 });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+it.each([
+  ["descriptor", "process group"],
+  ["process group", "descriptor"],
+] as const)(
+  "joins a denied process group with a retained read's descriptor and resolves only after both recover (%s first)",
+  async (first, second) => {
+    const producer = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null,
+      signalCode: null,
+      kill: () => true,
+    });
+    const unreadable = { pid: 101, reason: "environment-unreadable" } as const;
+    let groupDenied = true;
+    const owner = new ProviderProcessSupervisor({
+      process: producer,
+      ownsProcessLifetime: true,
+      ownership: { runId: "run-1", leaderPid: 4242, processGroupId: 4242 },
+      cleanup: async () =>
+        groupDenied
+          ? {
+              cleaned: false as const,
+              reason: "process group cleanup unconfirmed",
+              failures: [unreadable],
+            }
+          : { cleaned: true as const, signaled: false },
+    });
+    // The producer itself exited and closed its output; only its group is unconfirmed.
+    producer.emit("exit", 0, null);
+    producer.emit("close", 0, null);
+    const owned = ["run-1", "runtime-root", "pid:4242", "process-group:4242"];
+    const closes = { descriptor: 0, root: 0 };
+    const root = {
+      path: "runtime-root",
+      close: async () => {
+        closes.root++;
+      },
+    };
+    const fixture = await retainedReadFixture(closes);
+    const { resources, path, read } = fixture;
+    try {
+      resources.retain(root, owner);
+
+      const error = await fixture.finish();
+
+      expect(projectAnalysisError(error)).toMatchObject({
+        code: "cleanup_incomplete",
+        details: {
+          resources: [path, ...owned],
+          diagnostics: { failures: [unreadable] },
+        },
+      });
+      expect(error.diagnostics?.reason).toContain("descriptor close denied");
+      expect(error.diagnostics?.reason).toContain(
+        "process group cleanup unconfirmed",
+      );
+
+      // Retries that are still denied keep every owner and never remove the root.
+      await expect(resources.release()).rejects.toMatchObject({
+        cleanupIncomplete: true,
+      });
+      await expect(read.cleanupLease.release()).rejects.toThrow(
+        "descriptor close denied",
+      );
+      expect(error).toMatchObject({
+        cleanupIncomplete: true,
+        cleanupResources: [path, ...owned],
+      });
+      expect(closes).toEqual({ descriptor: 0, root: 0 });
+
+      const recover = {
+        descriptor: async () => {
+          fixture.allowDescriptorClose();
+          await read.cleanupLease.release();
+        },
+        "process group": async () => {
+          groupDenied = false;
+          await resources.release();
+        },
+      };
+      await recover[first]();
+      expect(error).toMatchObject({
+        cleanupIncomplete: true,
+        cleanupResources: first === "descriptor" ? owned : [path],
+      });
+      expect(closes).toEqual(
+        first === "descriptor"
+          ? { descriptor: 1, root: 0 }
+          : { descriptor: 0, root: 1 },
+      );
+
+      await recover[second]();
+      expect(error).toMatchObject({
+        cleanupIncomplete: false,
+        cleanupResources: [],
+      });
+      await fixture.close();
+      expect(closes).toEqual({ descriptor: 1, root: 1 });
+    } finally {
+      groupDenied = false;
+      await fixture.close();
+      owner.dispose();
+    }
+  },
+);
