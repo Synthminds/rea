@@ -226,6 +226,7 @@ const pathRequests: readonly [string, Record<string, unknown>][] = [
   ["inspect_binary_layout", { path: nul }],
   ["inspect_recorded_crash", { path: nul }],
   ["inspect_wasm_artifact", { path: nul }],
+  ["inspect_with_lief", { path: nul }],
   ["inspect_wasm_artifact", { path: "/tmp/sample.wasm", glue_paths: [nul] }],
   [
     "inspect_wasm_artifact",

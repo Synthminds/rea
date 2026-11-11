@@ -771,6 +771,7 @@ const HOST_RESTRICTED_TOOLS = [
   ["inspect_evm_interface", "evmInterface", "evmInterfaceEnabled"],
   ["inspect_binary_layout", "binaryLayout", "binaryLayoutEnabled"],
   ["inspect_recorded_crash", "recordedCrash", "recordedCrashEnabled"],
+  ["inspect_with_lief", "liefInspection", "liefInspectionEnabled"],
   [
     "inspect_firmware_regions",
     "firmwareInspection",
