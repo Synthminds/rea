@@ -164,6 +164,11 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     writesFilesystem: true,
     launchesProcess: true,
   }),
+  inspect_with_lief: effects({
+    mutatesSession: true,
+    writesFilesystem: true,
+    launchesProcess: true,
+  }),
   inspect_evm_interface: effects({
     mutatesSession: true,
     writesFilesystem: true,

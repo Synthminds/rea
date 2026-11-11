@@ -25,6 +25,7 @@ const HOST_RESTRICTED_TOOLS = [
   ["inspect_recorded_crash", "linux-x64"],
   ["recover_javascript_sources", "linux-x64"],
   ["inspect_evm_interface", "linux-x64"],
+  ["inspect_with_lief", "linux-x64"],
 ] as const;
 
 /** Run with the host identity that discovery and execution checks read. */
@@ -77,6 +78,7 @@ const connect = async (
         REA_BINWALK_COMMAND: path("binwalk"),
         REA_UNBLOB_COMMAND: path("unblob"),
         REA_PWNTOOLS_PYTHON: path("python3"),
+        REA_LIEF_PYTHON: path("python3"),
         REA_DIE_PYTHON: path("die-python3"),
         REA_WAKARU_COMMAND: path("wakaru"),
         REA_EVM_PRLIMIT_COMMAND: path("missing-prlimit"),
@@ -194,6 +196,7 @@ it("refuses execution on the hosts that discovery reports unsupported", async ()
       for (const [name, args] of [
         ["inspect_signal_decoders", {}],
         ["inspect_binary_layout", { path: harness.path("runtime.hex") }],
+        ["inspect_with_lief", { path: harness.path("runtime.hex") }],
         ["detect_file_signatures", { path: harness.path("runtime.hex") }],
         [
           "inspect_evm_interface",

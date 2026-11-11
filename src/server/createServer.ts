@@ -16,6 +16,12 @@ import { registerSignalTools } from "./registerSignalTools.js";
 import type { WasmArtifactService } from "../application/wasm/WasmArtifactService.js";
 import { wasmArtifactModule } from "../composition/wasm.js";
 import { registerWasmTools } from "./registerWasmTools.js";
+import {
+  liefHostSupported,
+  liefInspectionModule,
+} from "../composition/lief.js";
+import type { LiefInspectionService } from "../application/lief/LiefInspectionService.js";
+import { registerLiefTools } from "./registerLiefTools.js";
 import type { ApkSignatureService } from "../application/apkSignature/ApkSignatureService.js";
 import { apkSignatureModule } from "../composition/apkSignature.js";
 import { registerApkSignatureTools } from "./registerApkSignatureTools.js";
@@ -217,6 +223,7 @@ export interface CreateServerOptions {
   readonly packetCapture?: PacketCaptureService;
   readonly signalRecording?: SignalRecordingService;
   readonly wasmArtifact?: WasmArtifactService;
+  readonly liefInspection?: LiefInspectionService;
   readonly apkSignature?: ApkSignatureService;
   readonly providerEnvironment?: Readonly<NodeJS.ProcessEnv>;
   readonly evmInterface?: EvmInterfaceService;
@@ -284,6 +291,7 @@ const installSessionToolAvailability = (
     signalRecording: sigrokHostSupported(platform),
     evmInterface: evmHostSupported(platform, arch),
     pwntools: pwntoolsHostSupported(platform, arch),
+    lief: liefHostSupported(platform, arch),
     fileSignatures: dieHostSupported(platform, arch),
     firmware: firmwareHostSupported(platform),
     javascriptRecovery: wakaruHostSupported(platform, arch),
@@ -317,6 +325,10 @@ const installSessionToolAvailability = (
         options.recordedCrash,
         verifiedHost.pwntools,
       ),
+      liefInspection: outsideVerifiedHost(
+        options.liefInspection,
+        verifiedHost.lief,
+      ),
       fileSignatures: outsideVerifiedHost(
         options.fileSignatures,
         verifiedHost.fileSignatures,
@@ -345,6 +357,9 @@ const installSessionToolAvailability = (
       wasmArtifactEnabled:
         options.wasmArtifact !== undefined ||
         isAbsolute(environment.REA_WABT_BIN_DIRECTORY ?? ""),
+      liefInspectionEnabled:
+        options.liefInspection !== undefined ||
+        (verifiedHost.lief && isAbsolute(environment.REA_LIEF_PYTHON ?? "")),
       evmInterfaceEnabled:
         options.evmInterface !== undefined || verifiedHost.evmInterface,
       webModuleResolutionEnabled:
@@ -541,6 +556,10 @@ export const createServer = (
     environment,
     options.wasmArtifact,
   );
+  const liefInspection = liefInspectionModule.create(
+    environment,
+    options.liefInspection,
+  );
   const apkSignature = apkSignatureModule.create(
     environment,
     options.apkSignature,
@@ -566,6 +585,7 @@ export const createServer = (
       cutter.close(),
       fridaInstrumentation.closeAll(),
       wasmArtifact.close(),
+      liefInspection.close(),
       apkSignature.close(),
       packetCapture.close(),
       signalRecording.close(),
@@ -780,6 +800,13 @@ export const createServer = (
   registerSignalTools(
     server,
     signalRecording,
+    toolLogger,
+    recordEvidence,
+    analysisAdmission,
+  );
+  registerLiefTools(
+    server,
+    liefInspection,
     toolLogger,
     recordEvidence,
     analysisAdmission,

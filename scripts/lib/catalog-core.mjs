@@ -65,6 +65,8 @@ const SOURCE_PATHS = {
   signalProvider: "dist/signals/SigrokRecordingProvider.js",
   wasmContracts: "dist/contracts/wasm/wasmToolContracts.js",
   wasmProvider: "dist/wasm/WabtRelease.js",
+  liefContracts: "dist/contracts/lief/liefToolContracts.js",
+  liefProvider: "dist/lief/LiefRelease.js",
   apkSignatureContracts:
     "dist/contracts/apkSignature/apkSignatureToolContracts.js",
   apkSignatureProvider: "dist/apkSignature/ApkSignatureRelease.js",

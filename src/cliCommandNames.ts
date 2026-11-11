@@ -55,6 +55,7 @@ export const CLI_COMMANDS = Object.freeze({
   listCutterSessions: "list-cutter-sessions",
   cutterCommand: "cutter-command",
   inspectWithObjdump: "inspect-with-objdump",
+  inspectWithLief: "inspect-with-lief",
   listObjdumpArchitectures: "list-objdump-architectures",
   executeRizinCommand: "execute-rizin-command",
   debugWithGdb: "debug-with-gdb",

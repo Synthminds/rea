@@ -59,6 +59,7 @@ export const HOST_RESTRICTED_FEATURES = [
   "evmInterface",
   "binaryLayout",
   "recordedCrash",
+  "liefInspection",
   "firmwareInspection",
   "firmwareExtraction",
   "javascriptRecovery",
@@ -74,6 +75,7 @@ export type AvailabilityPolicy = {
   readonly packetCaptureEnabled?: boolean;
   readonly signalRecordingEnabled?: boolean;
   readonly wasmArtifactEnabled?: boolean;
+  readonly liefInspectionEnabled?: boolean;
   readonly evmInterfaceEnabled?: boolean;
   /** Fresh owner observation of the selected required EVM limiter. */
   readonly evmLimiterAvailability?: ProviderAvailability;
@@ -523,6 +525,13 @@ const workflowAvailabilityFor = ({
           remediation:
             "Supply WABT 1.0.42 via absolute REA_WABT_BIN_DIRECTORY. No active binary target is required; tools are checked at execution.",
         };
+  if (name === "inspect_with_lief")
+    return hostRestrictedAvailability(
+      policy,
+      "liefInspection",
+      policy.liefInspectionEnabled,
+      "On Linux x64, set absolute REA_LIEF_PYTHON to caller-supplied Python that can import LIEF 1.0.x (verified with 1.0.0). REA never installs Python or LIEF. No active binary target is required.",
+    );
   if (name === "inspect_pe_resources" || name === "inspect_native_exports")
     return { reason: "available", remediation: null };
   if (name === "inspect_pe_certificates")

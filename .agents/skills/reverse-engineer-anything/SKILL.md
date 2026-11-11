@@ -247,6 +247,13 @@ explicit path or endpoint and do not need it.
   absence of that table, not proof the image is unsigned in every catalog sense.
   Signatures are not verified. See the
   [PE certificate guide](https://github.com/morluto/rea/blob/main/docs/pe-certificates.md).
+- ELF, PE or Mach-O structure: `inspect_with_lief` with the explicit local
+  file, after `REA_LIEF_PYTHON` selects a caller-supplied Python with LIEF 1.0.x.
+  Start with `summary`, then page `sections`, `segments`, `imports` or
+  `exports` with `offset`/`limit` and `next_offset`; select a universal slice
+  with `macho_slice`. Preserve artifact SHA-256 and `parser_diagnostics`. Signatures are
+  located, not verified, and ELF imports have no per-library binding. See the
+  [LIEF guide](https://github.com/morluto/rea/blob/main/docs/lief.md).
 - ELF note tables: `inspect_elf_notes` with the explicit local ELF32/ELF64
   file. This built-in target-free inspection requires no disassembler. Preserve
   PT_NOTE and SHT_NOTE ranges, owners, types, descriptor SHA-256, and GNU
