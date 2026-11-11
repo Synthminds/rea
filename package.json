@@ -88,6 +88,8 @@
     "bridge/pwntools/layout_impl.py",
     "third_party/pwntools/README.md",
     "third_party/wabt/README.md",
+    "bridge/die/scan.py",
+    "third_party/die/README.md",
     "third_party/evmole/README.md",
     "third_party/evmole/LICENSE",
     "bridge/pwntools/decoder_runtime.py",

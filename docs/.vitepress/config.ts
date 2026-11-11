@@ -35,6 +35,7 @@ export default defineConfig({
           { text: "PE certificates", link: "/pe-certificates" },
           { text: "ELF notes", link: "/elf-notes" },
           { text: "LIEF structure", link: "/lief" },
+          { text: "File signatures", link: "/file-signatures" },
           { text: "CPython pyc files", link: "/python-pyc" },
           { text: "Erlang BEAM", link: "/erlang-beam" },
           {

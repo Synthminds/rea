@@ -21,6 +21,7 @@ const HOST_RESTRICTED_TOOLS = [
   ["inspect_firmware_regions", "linux"],
   ["extract_firmware", "linux"],
   ["inspect_binary_layout", "linux-x64"],
+  ["detect_file_signatures", "linux-x64"],
   ["inspect_recorded_crash", "linux-x64"],
   ["recover_javascript_sources", "linux-x64"],
   ["inspect_evm_interface", "linux-x64"],
@@ -78,6 +79,7 @@ const connect = async (
         REA_UNBLOB_COMMAND: path("unblob"),
         REA_PWNTOOLS_PYTHON: path("python3"),
         REA_LIEF_PYTHON: path("python3"),
+        REA_DIE_PYTHON: path("die-python3"),
         REA_WAKARU_COMMAND: path("wakaru"),
         REA_EVM_PRLIMIT_COMMAND: path("missing-prlimit"),
         REA_MCP_OUTPUT_SCHEMA_PROFILE: "off",
@@ -195,6 +197,7 @@ it("refuses execution on the hosts that discovery reports unsupported", async ()
         ["inspect_signal_decoders", {}],
         ["inspect_binary_layout", { path: harness.path("runtime.hex") }],
         ["inspect_with_lief", { path: harness.path("runtime.hex") }],
+        ["detect_file_signatures", { path: harness.path("runtime.hex") }],
         [
           "inspect_evm_interface",
           { path: harness.path("runtime.hex"), encoding: "hex" },

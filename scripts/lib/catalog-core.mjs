@@ -56,6 +56,8 @@ const SOURCE_PATHS = {
   fridaContracts: "dist/contracts/fridaToolContracts.js",
   fridaProvider: "dist/frida/FridaInstrumentationManager.js",
   pwntoolsProvider: "dist/native/pwntools/PwntoolsRelease.js",
+  fileSignatureContracts: "dist/contracts/native/fileSignatureToolContracts.js",
+  dieProvider: "dist/native/die/DieRelease.js",
   nativeContracts: "dist/contracts/native/nativeToolContracts.js",
   captureContracts: "dist/contracts/captures/captureToolContracts.js",
   captureProvider: "dist/captures/TsharkCaptureProvider.js",

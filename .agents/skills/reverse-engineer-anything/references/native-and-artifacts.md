@@ -137,6 +137,21 @@ as possible omissions. Use `inspect_pe_certificates` or `inspect_signature` when
 signature contents matter. See
 [executable structure with LIEF](https://github.com/morluto/rea/blob/main/docs/lief.md).
 
+## Detect It Easy file signatures
+
+Use `detect_file_signatures` for an explicit local file when the question is
+what file type, compiler, linker, library, packer or protector Detect It Easy
+recognizes. It needs caller-supplied die-python 0.5.0 (`REA_DIE_PYTHON`) and
+util-linux `prlimit` on Linux x64, with `REA_DIE_COMMAND` unset (diec is refused
+as unverified); no `open_binary` or target execution is required. The CLI equivalent is
+`detect-file-signatures PATH`. Request `heuristic_scan`, `recursive_scan` or
+`deep_scan` only when the question needs them; unrequested scans leave their
+detections unknown. Preserve the artifact SHA-256, file-part nesting, DiE's
+heuristic marker and the tool profile. Present detections as leads, not proof,
+and do not turn a packer or protector detection into unpacking or bypass advice.
+See
+[Detect It Easy file signatures](https://github.com/morluto/rea/blob/main/docs/file-signatures.md).
+
 ## CPython pyc files
 
 Use `inspect_python_pyc` for an explicit local CPython 3.7–3.13 `.pyc` when the
