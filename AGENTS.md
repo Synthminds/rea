@@ -111,6 +111,28 @@ and affected validation current as work changes. The readiness check validates
 the filled declaration; CI and automated review results do not establish that
 human review occurred, maintainer scope approval, or merge permission.
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues are enabled on the `Synthminds/rea` fork. Follow `docs/agents/issue-tracker.md` for repository targeting, publication authority and current labels.
+
+### Triage labels
+
+Canonical triage roles map to existing repository labels where configured; four state roles are not configured. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `GLOSSARY.md`. See `docs/agents/domain.md`.
+
+### External peers
+
+`auto`: the hardened Claude or Codex adapter, selected from host-family metadata. See `docs/agents/cross-model.json`.
+
+### Running REA
+
+To build, launch and drive the CLI or MCP server, follow `.agents/skills/rea-run/SKILL.md`.
+
 <!-- BEGIN:turborepo-agent-rules -->
 
 # This is NOT the Turborepo you know

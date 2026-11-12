@@ -1,0 +1,4 @@
+interface:
+  display_name: "REA run"
+  short_description: "Build REA and drive its CLI and MCP server"
+  default_prompt: "Use $rea-run to build this checkout and exercise the changed CLI or MCP behavior in a terminal before reporting it works."
