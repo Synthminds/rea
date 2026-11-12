@@ -74,7 +74,7 @@ it.each(["regular", "indexed"])(
           fetchUrl: `${localOrigin}/${index}`,
           declaredUrl: `${localOrigin}/${index}`,
         })),
-        input({ allowed_origins: [localOrigin] }),
+        localInput(localOrigin),
       );
       expect(result.items.map(({ status }) => status)).toEqual([
         "included",
@@ -165,7 +165,7 @@ it("parses ECMA-426 HTTP source-map prefixes while retaining exact response evid
         fetchUrl: `${localOrigin}/${index}`,
         declaredUrl: `${localOrigin}/${index}`,
       })),
-      input({ allowed_origins: [localOrigin] }),
+      localInput(localOrigin),
     );
     expect(result.items.map(({ status }) => status)).toEqual([
       "included",
@@ -251,7 +251,7 @@ describe("source-map redirect URL resolution", () => {
         const declaredUrl = `${localOrigin}${initialPath}`;
         const result = await fetchWebSourceMaps(
           [{ ...request, fetchUrl: declaredUrl, declaredUrl }],
-          input({ allowed_origins: [localOrigin] }),
+          localInput(localOrigin),
         );
         expect(calls).toEqual(
           initialPath === "/maps/current"
@@ -536,7 +536,7 @@ describe("web source-map fetching and validation: enforcing fetch limits and val
       const url = `${localOrigin}/map?n=0`;
       const result = await fetchWebSourceMaps(
         [{ ...request, fetchUrl: url, declaredUrl: url }],
-        input({ allowed_origins: [localOrigin] }),
+        localInput(localOrigin),
         undefined,
         { fetch, timeoutMs: 100 },
       );
@@ -591,7 +591,7 @@ describe("web source-map fetching and validation: enforcing fetch limits and val
       const url = `${localOrigin}/map`;
       const result = await fetchWebSourceMaps(
         [{ ...request, fetchUrl: url, declaredUrl: url }],
-        input({ allowed_origins: [localOrigin] }),
+        localInput(localOrigin),
         undefined,
         { fetch, maxResponseBytes: 512 },
       );
@@ -1457,7 +1457,7 @@ describe("source-map set output admission", () => {
     });
     const result = await fetchWebSourceMaps(
       requests,
-      input({ allowed_origins: [localOrigin] }),
+      localInput(localOrigin),
       undefined,
       {
         timeoutMs: 120_000,
@@ -1744,6 +1744,13 @@ const input = (overrides: Record<string, unknown> = {}) => {
   });
 };
 
+/** A local fixture server is a private origin, so these inputs opt in to it. */
+const localInput = (localOrigin: string) =>
+  input({
+    allowed_origins: [localOrigin],
+    allow_private_origins: [localOrigin],
+  });
+
 it("keeps bare original module specifiers unresolved", async () => {
   const result = await fetchWebSourceMaps([request], input(), undefined, {
     fetch: () =>
@@ -1819,7 +1826,7 @@ describe("source-map original artifact language metadata", () => {
       const url = `${localOrigin}/main.js.map`;
       const result = await fetchWebSourceMaps(
         [{ ...request, fetchUrl: url, declaredUrl: url }],
-        input({ allowed_origins: [localOrigin] }),
+        localInput(localOrigin),
         AbortSignal.timeout(2_000),
       );
       expect(result).toMatchObject({

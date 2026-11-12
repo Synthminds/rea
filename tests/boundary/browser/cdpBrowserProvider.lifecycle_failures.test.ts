@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { CdpBrowserProvider } from "../../../src/browser/CdpBrowserProvider.js";
 import {
@@ -152,6 +152,7 @@ describe("CdpBrowserProvider: cancellation during source-map download", () => {
         target_id: "allowed-page",
         observation_ms: 0,
         fetch_source_maps: true,
+        allow_private_origins: [browser.allowedOrigin],
       }),
       { signal: controller.signal },
     );
@@ -182,6 +183,7 @@ describe("CdpBrowserProvider: cancellation during source-map download", () => {
         target_id: "allowed-page",
         observation_ms: 0,
         fetch_source_maps: true,
+        allow_private_origins: [browser.allowedOrigin],
       }),
       { signal: controller.signal },
     );
@@ -730,66 +732,37 @@ describe("CdpBrowserProvider: navigation commit and target identity", () => {
 
 describe("CdpBrowserProvider: source-map cancellation", () => {
   it("classifies an AnalysisError abort reason as cancellation", async () => {
-    const browser = await startFakeCdpBrowser({
-      sourceMapBody: JSON.stringify({
-        version: 3,
-        sources: ["app.ts"],
-        names: [],
-        mappings: "",
-      }),
-    });
+    const browser = await startFakeCdpBrowser({ hangSourceMap: true });
     trackBrowser(browser);
     const controller = new AbortController();
     const reason = new AnalysisInputError("caller_operation");
-    let markSourceMapRequested!: () => void;
-    const sourceMapRequested = new Promise<void>((resolve) => {
-      markSourceMapRequested = resolve;
+    const pending = new CdpBrowserProvider().analyzeBundle(
+      analyzeWebBundleInputSchema.parse({
+        cdp_endpoint: browser.endpoint,
+        allowed_origins: [browser.allowedOrigin],
+        target_id: "allowed-page",
+        observation_ms: 0,
+        fetch_source_maps: true,
+        allow_private_origins: [browser.allowedOrigin],
+      }),
+      { signal: controller.signal },
+    );
+    await waitFor(
+      () =>
+        browser.httpRequests.some(({ url }) => url.startsWith("/app.js.map")),
+      "source-map download did not start",
+    );
+    controller.abort(reason);
+    const result = await pending;
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCancelledError",
+        operation: "analyze_web_bundle",
+      },
     });
-    const originalFetch = globalThis.fetch;
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation((resource, init) => {
-        if (String(resource).includes("/app.js.map")) {
-          markSourceMapRequested();
-          return new Promise<Response>((_resolve, reject) => {
-            const signal = init?.signal;
-            if (signal?.aborted === true) {
-              reject(signal.reason);
-              return;
-            }
-            signal?.addEventListener("abort", () => reject(signal.reason), {
-              once: true,
-            });
-          });
-        }
-        return originalFetch(resource, init);
-      });
-    try {
-      const pending = new CdpBrowserProvider().analyzeBundle(
-        analyzeWebBundleInputSchema.parse({
-          cdp_endpoint: browser.endpoint,
-          allowed_origins: [browser.allowedOrigin],
-          target_id: "allowed-page",
-          observation_ms: 0,
-          fetch_source_maps: true,
-        }),
-        { signal: controller.signal },
-      );
-      await sourceMapRequested;
-      controller.abort(reason);
-      const result = await pending;
-      expect(result).toMatchObject({
-        ok: false,
-        error: {
-          _tag: "AnalysisCancelledError",
-          operation: "analyze_web_bundle",
-        },
-      });
-      if (result.ok) throw new Error("Expected source-map cancellation");
-      expect(result.error.cause).toBe(reason);
-    } finally {
-      fetchMock.mockRestore();
-    }
+    if (result.ok) throw new Error("Expected source-map cancellation");
+    expect(result.error.cause).toBe(reason);
   });
 });
 

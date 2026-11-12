@@ -17,6 +17,10 @@ import {
   RegularFileCleanupFailure,
   withOwnedRegularFile,
 } from "../../filesystem/OwnedRegularFile.js";
+import {
+  DestinationRefusedError,
+  vettedFetch,
+} from "../../browser/network/PublicNetwork.js";
 
 /** Why a named file or download could not be read, or a call was cancelled: a category naming neither the uri nor the content. */
 export type IntakeFailure =
@@ -28,6 +32,7 @@ export type IntakeFailure =
   | "timeout"
   | "http-status"
   | "network"
+  | "non-public-address"
   | "cancelled";
 
 /** A JSON-RPC error the data plane answers with; `data` locates a document problem, names an intake failure or states the response budget. */
@@ -57,9 +62,14 @@ export const STATE_FETCH_TIMEOUT_MS = 30_000;
 /** Fetches one https state document; injectable so tests make no external requests. */
 export type StateFetcher = (url: URL, signal: AbortSignal) => Promise<Response>;
 
-/** Redirects are refused so a download never leaves the https origin the caller named. */
+/**
+ * Redirects are refused so a download never leaves the https origin the
+ * caller named. The host must be a public address: a private, loopback,
+ * link-local or other non-public literal, or a name resolving to one, is
+ * refused, and the connection goes only to the address vetted for it.
+ */
 export const fetchStateDocument: StateFetcher = (url, signal) =>
-  fetch(url, { signal, redirect: "error" });
+  vettedFetch(url, { signal, redirect: "error" });
 
 /** How `data/add` reaches documents a uri names; injectable so tests make no external requests and need not wait. */
 export interface StateIntake {
@@ -106,6 +116,13 @@ const fetchFailed = (reason: IntakeFailure): RpcError => ({
   code: SERVER_ERROR,
   message: "the state document could not be downloaded",
   data: { reason },
+});
+
+/** Names the refused address class only, so the error never echoes the uri's host. */
+const nonPublicHost = (refusal: DestinationRefusedError): RpcError => ({
+  code: SERVER_ERROR,
+  message: `the state document was not downloaded: its host is not a public address (${refusal.refusal.addressClass})`,
+  data: { reason: "non-public-address" },
 });
 
 const FILE_FAILURES: ReadonlyMap<string, IntakeFailure> = new Map([
@@ -264,7 +281,7 @@ const downloadState = async (
   let response: Response;
   try {
     response = await Promise.race([fetching, abortion(bounds.signal)]);
-  } catch {
+  } catch (cause: unknown) {
     // A response that arrives after the download ended is released unread.
     void fetching
       .then(
@@ -272,7 +289,11 @@ const downloadState = async (
         () => undefined,
       )
       .catch(() => undefined);
-    return err(fetchFailed(bounds.failure()));
+    return err(
+      cause instanceof DestinationRefusedError
+        ? nonPublicHost(cause)
+        : fetchFailed(bounds.failure()),
+    );
   }
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (!response.ok || declared > STATE_INTAKE_LIMIT_BYTES) {

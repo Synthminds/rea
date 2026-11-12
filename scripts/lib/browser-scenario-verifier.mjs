@@ -49,6 +49,8 @@ const duplicateOriginStorage = (origin) => ({
 export function browserScenario(browser, origin) {
   return browserScenarioSchema.parse({
     browser,
+    // The fixture site is a loopback dev server; every request stays on it.
+    allow_private_origins: [origin],
     start_url: {
       url: `${origin}/app`,
       query: [
@@ -151,6 +153,8 @@ export async function runScenarioCli(scenario) {
 export async function verifyScenarioFailureEvidence(executable, origin) {
   const scenario = browserScenarioSchema.parse({
     browser: { mode: "launch", executable_path: executable },
+    // Allowed so the fixture itself, not the address policy, fails navigation.
+    allow_private_origins: [origin],
     start_url: { url: `${origin}/failed-navigation` },
     actions: [
       { step_id: "unused", action: "wait_for_timeout", duration_ms: 1 },

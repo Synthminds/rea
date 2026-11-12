@@ -48,6 +48,7 @@ const isNavigationTransitionRejection = (cause) =>
 const environmentScenario = ({ endpoint, targetId, origin, values, run }) =>
   browserScenarioSchema.parse({
     browser: { mode: "connect", cdp_endpoint: endpoint, target_id: targetId },
+    allow_private_origins: [origin],
     start_url: {
       url: `${origin}/scenario-environment${run === undefined ? "" : `?run=${run}`}`,
     },

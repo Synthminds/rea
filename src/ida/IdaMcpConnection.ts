@@ -287,6 +287,13 @@ const readBoundedResponseText = async (
   }
 };
 
+/**
+ * Loopback is intended here, so this fetch is exempt from the private-network
+ * policy (src/domain/networkDestination.ts): IdaConfiguration admits only a
+ * caller-registered localhost, 127.0.0.1 or [::1] endpoint for the local IDA
+ * MCP server, and the transport refuses redirects, so no page or analysed
+ * input can choose another destination.
+ */
 const diagnosticFetch =
   (redactor: IdaDiagnosticRedactor): typeof fetch =>
   async (input, init) => {

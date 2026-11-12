@@ -15,6 +15,9 @@ import { closeVerifierResources } from "./verifier-cleanup.mjs";
 const scenarioFor = (browser, origin) =>
   browserScenarioSchema.parse({
     browser,
+    // The frame and top-level partition run on the same loopback server under
+    // its localhost name, a separate origin the policy must also allow.
+    allow_private_origins: [origin, origin.replace("127.0.0.1", "localhost")],
     start_url: { url: `${origin}/storage-main` },
     actions: [
       {

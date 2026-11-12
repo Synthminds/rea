@@ -26,6 +26,7 @@ const scenarioFor = (executable, origin, value) => {
   ];
   return {
     browser: { mode: "launch", executable_path: executable },
+    allow_private_origins: [origin],
     start_url: { url: `${origin}/scenario-environment` },
     actions: [
       { step_id: "settle", action: "wait_for_timeout", duration_ms: 1 },

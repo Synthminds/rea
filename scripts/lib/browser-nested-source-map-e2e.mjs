@@ -117,6 +117,8 @@ async function verifyCase(executable, entrypoint, scenario) {
         "--allowed-origins",
         site.origin,
         "--fetch-source-maps",
+        "--allow-private-origins",
+        site.origin,
         "--observation-ms",
         "0",
         "--json",

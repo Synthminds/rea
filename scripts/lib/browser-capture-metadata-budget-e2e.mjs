@@ -97,6 +97,8 @@ export async function verifyBrowserCaptureMetadataBudget(endpoint) {
       "--observation-ms",
       "0",
       "--fetch-source-maps",
+      "--allow-private-origins",
+      fixtureOrigin,
     ]);
     assertBundleMetadataOmissions(
       bundle.normalized_result,
@@ -126,6 +128,7 @@ export async function verifyBrowserCaptureMetadataBudget(endpoint) {
           target_id: targetId,
           observation_ms: 0,
           fetch_source_maps: true,
+          allow_private_origins: [fixtureOrigin],
         }),
         cliFacts.omittedMaps,
       );

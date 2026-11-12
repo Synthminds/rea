@@ -34,6 +34,7 @@ const document = (path) => {
 const scenarioFor = (executable, origin, events) =>
   browserScenarioSchema.parse({
     browser: { mode: "launch", executable_path: executable },
+    allow_private_origins: [origin],
     start_url: { url: origin },
     actions: [
       {

@@ -154,6 +154,7 @@ export const verifyScenarioPolicySetup = async (
         cdp_endpoint: proxy.endpoint,
         target_id: targetId,
       },
+      allow_private_origins: [origin],
       start_url: { url: origin },
       ...(mode === "deadline"
         ? { command_timeout_ms: setupCommandTimeoutMs }

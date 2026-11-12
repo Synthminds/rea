@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { webRuntimeCommandTimeoutSchema } from "./browserDeadline.js";
+import { allowPrivateOriginsSchema } from "./networkDestination.js";
 import {
   browserScenarioActionSchema,
   BROWSER_SCENARIO_START_STEP_ID,
@@ -36,6 +37,9 @@ export const browserScenarioInputSchema = z.strictObject({
     ),
   capture: browserScenarioCaptureSchema,
   command_timeout_ms: webRuntimeCommandTimeoutSchema,
+  allow_private_origins: allowPrivateOriginsSchema(
+    "Optional exact origins, at most 32, the scenario may reach although their addresses are not public, such as a local dev server at http://127.0.0.1:5173. Defaults to none: private, loopback, link-local, unique-local, IPv4-mapped and other non-public destinations are refused for the start URL, every redirect and every subresource, and a name is refused when any of its addresses is non-public. Link-local and cloud metadata addresses cannot be allowed, and an allowed name is still refused when it resolves to one.",
+  ),
 });
 
 type ScenarioShape = z.infer<typeof browserScenarioInputSchema>;

@@ -32,6 +32,7 @@ export async function verifyBrowserNetworkEvidence(
     profilesBefore = await scenarioProfiles();
     const scenario = browserScenarioSchema.parse({
       browser: { mode: "launch", executable_path: executable },
+      allow_private_origins: [site.origin],
       start_url: { url: site.origin },
       actions: [
         {

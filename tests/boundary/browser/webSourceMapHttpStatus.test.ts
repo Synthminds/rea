@@ -52,6 +52,7 @@ it.each([
         cdp_endpoint: "http://127.0.0.1:9222",
         target_id: "selected-page",
         allowed_origins: [origin],
+        allow_private_origins: [origin],
         fetch_source_maps: true,
       });
       const url = `${origin}/${String(status)}`;
@@ -145,6 +146,7 @@ it.each(["invalid JSON", "invalid UTF-8", "HTTP failure", "response limit"])(
         cdp_endpoint: "http://127.0.0.1:9222",
         target_id: "page",
         allowed_origins: [origin],
+        allow_private_origins: [origin],
         fetch_source_maps: true,
       }),
       undefined,
@@ -228,6 +230,7 @@ it.each([
         cdp_endpoint: "http://127.0.0.1:9222",
         target_id: "page",
         allowed_origins: [origin],
+        allow_private_origins: [origin],
         fetch_source_maps: true,
       }),
       undefined,
@@ -269,6 +272,7 @@ it("charges complete escaped redirect errors and cancels every discarded respons
     cdp_endpoint: "http://127.0.0.1:9222",
     target_id: "page",
     allowed_origins: [origin],
+    allow_private_origins: [origin],
     fetch_source_maps: true,
   });
   let calls = 0;

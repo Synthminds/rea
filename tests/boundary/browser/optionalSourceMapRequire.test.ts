@@ -37,6 +37,7 @@ it("retains unshadowed optional require dependencies from HTTP source-map origin
         cdp_endpoint: origin,
         target_id: "fixture",
         allowed_origins: [origin],
+        allow_private_origins: [origin],
         fetch_source_maps: true,
       }),
     );
