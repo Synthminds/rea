@@ -2,6 +2,7 @@ import { GPU_TOOL_CONTRACTS } from "./gpu/gpuToolContracts.js";
 import { CAPTURE_TOOL_CONTRACTS } from "./captures/captureToolContracts.js";
 import { SIGNAL_TOOL_CONTRACTS } from "./signals/signalToolContracts.js";
 import { WASM_TOOL_CONTRACTS } from "./wasm/wasmToolContracts.js";
+import { LIEF_TOOL_CONTRACTS } from "./lief/liefToolContracts.js";
 import { APK_SIGNATURE_TOOL_CONTRACTS } from "./apkSignature/apkSignatureToolContracts.js";
 import { EVM_TOOL_CONTRACTS } from "./evm/evmToolContracts.js";
 import { DESKTOP_APPLICATION_TOOL_CONTRACTS } from "./desktopApplicationToolContracts.js";
@@ -14,6 +15,7 @@ import { ERLANG_BEAM_TOOL_CONTRACTS } from "./erlang/beamToolContracts.js";
 import { SQLITE_TOOL_CONTRACTS } from "./sqlite/sqliteToolContracts.js";
 import { ANALYSIS_VIEW_TOOL_CONTRACTS } from "./analysisViewToolContracts.js";
 import { BINARY_DIAGNOSTICS_TOOL_CONTRACTS } from "./native/binaryDiagnosticsToolContracts.js";
+import { FILE_SIGNATURE_TOOL_CONTRACTS } from "./native/fileSignatureToolContracts.js";
 import { NATIVE_TOOL_CONTRACTS } from "./native/nativeToolContracts.js";
 import { ARTIFACT_TOOL_CONTRACTS } from "./artifactToolContracts.js";
 import { MANAGED_TOOL_CONTRACTS } from "./managed/managedToolContracts.js";
@@ -48,6 +50,7 @@ export const TOOL_CONTRACTS = [
   ...ENHANCED_TOOL_CONTRACTS,
   ...NATIVE_TOOL_CONTRACTS,
   ...BINARY_DIAGNOSTICS_TOOL_CONTRACTS,
+  ...FILE_SIGNATURE_TOOL_CONTRACTS,
   ...ANALYSIS_VIEW_TOOL_CONTRACTS,
   ...ARTIFACT_TOOL_CONTRACTS,
   ...DESKTOP_APPLICATION_TOOL_CONTRACTS,
@@ -60,6 +63,7 @@ export const TOOL_CONTRACTS = [
   ...PYTHON_PYC_TOOL_CONTRACTS,
   ...ERLANG_BEAM_TOOL_CONTRACTS,
   ...WASM_TOOL_CONTRACTS,
+  ...LIEF_TOOL_CONTRACTS,
   ...APK_SIGNATURE_TOOL_CONTRACTS,
   ...SQLITE_TOOL_CONTRACTS,
   ...CAPTURE_TOOL_CONTRACTS,

@@ -29,6 +29,8 @@ const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
   inspect_pe_resources: "states that it does not execute the image",
   inspect_native_exports: "reads the export table without executing it",
   inspect_elf_notes: "states that it does not execute the image",
+  detect_file_signatures:
+    "runs operator-configured DiE on a private snapshot without executing the file",
   inspect_desktop_application:
     "states that directory triage performs no target execution",
   inspect_pe_certificates: "states that it does not execute the image",
@@ -50,6 +52,8 @@ const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
     "compares retained inspection Evidence without executing modules",
   inspect_wasm_artifact:
     "WABT validates and decompiles the module without executing it",
+  inspect_with_lief:
+    "reads a private copy with operator-configured LIEF without executing the target",
   identify_flutter_build:
     "identifies the build through execution-free APK parsing",
   inspect_dart_aot: "inspects snapshot bytes without executing them",

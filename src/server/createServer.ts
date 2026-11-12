@@ -16,6 +16,12 @@ import { registerSignalTools } from "./registerSignalTools.js";
 import type { WasmArtifactService } from "../application/wasm/WasmArtifactService.js";
 import { wasmArtifactModule } from "../composition/wasm.js";
 import { registerWasmTools } from "./registerWasmTools.js";
+import {
+  liefHostSupported,
+  liefInspectionModule,
+} from "../composition/lief.js";
+import type { LiefInspectionService } from "../application/lief/LiefInspectionService.js";
+import { registerLiefTools } from "./registerLiefTools.js";
 import type { ApkSignatureService } from "../application/apkSignature/ApkSignatureService.js";
 import { apkSignatureModule } from "../composition/apkSignature.js";
 import { registerApkSignatureTools } from "./registerApkSignatureTools.js";
@@ -23,15 +29,18 @@ import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { captureProviderEnvironment } from "./providerEnvironment.js";
 import {
   createElfNotesService,
+  createFileSignaturesService,
   createPeCertificatesService,
   createNativeExportsService,
   createPeResourcesService,
 } from "../composition/binaryDiagnostics.js";
 import type { ElfNotesService } from "../application/binaryDiagnostics/ElfNotesService.js";
+import type { FileSignaturesService } from "../application/binaryDiagnostics/FileSignaturesService.js";
 import type { PeCertificatesService } from "../application/binaryDiagnostics/PeCertificatesService.js";
 import type { PeResourcesService } from "../application/binaryDiagnostics/PeResourcesService.js";
 import type { NativeExportsService } from "../application/binaryDiagnostics/NativeExportsService.js";
 import { registerElfNotesTool } from "./registerElfNotesTool.js";
+import { registerFileSignaturesTool } from "./registerFileSignaturesTool.js";
 import { registerPeCertificatesTool } from "./registerPeCertificatesTool.js";
 import { registerPeResourcesTool } from "./registerPeResourcesTool.js";
 import { registerNativeExportsTool } from "./registerNativeExportsTool.js";
@@ -77,6 +86,7 @@ import {
   createByteEntropyService,
   createBinaryLayoutService,
   pwntoolsHostSupported,
+  dieHostSupported,
 } from "../composition/binaryDiagnostics.js";
 import type { BinaryLayoutService } from "../application/binaryDiagnostics/BinaryLayoutService.js";
 import { createCatalogIdentity } from "../catalogIdentity.js";
@@ -213,12 +223,14 @@ export interface CreateServerOptions {
   readonly packetCapture?: PacketCaptureService;
   readonly signalRecording?: SignalRecordingService;
   readonly wasmArtifact?: WasmArtifactService;
+  readonly liefInspection?: LiefInspectionService;
   readonly apkSignature?: ApkSignatureService;
   readonly providerEnvironment?: Readonly<NodeJS.ProcessEnv>;
   readonly evmInterface?: EvmInterfaceService;
   readonly sqliteDatabase?: SqliteDatabaseService;
   readonly logger?: Logger;
   readonly binaryLayout?: BinaryLayoutService;
+  readonly fileSignatures?: FileSignaturesService;
   readonly goBinary?: GoBinaryService;
   readonly il2cppMetadata?: Il2cppMetadataService;
   readonly rustBinary?: RustBinaryService;
@@ -279,6 +291,8 @@ const installSessionToolAvailability = (
     signalRecording: sigrokHostSupported(platform),
     evmInterface: evmHostSupported(platform, arch),
     pwntools: pwntoolsHostSupported(platform, arch),
+    lief: liefHostSupported(platform, arch),
+    fileSignatures: dieHostSupported(platform, arch),
     firmware: firmwareHostSupported(platform),
     javascriptRecovery: wakaruHostSupported(platform, arch),
   };
@@ -311,6 +325,14 @@ const installSessionToolAvailability = (
         options.recordedCrash,
         verifiedHost.pwntools,
       ),
+      liefInspection: outsideVerifiedHost(
+        options.liefInspection,
+        verifiedHost.lief,
+      ),
+      fileSignatures: outsideVerifiedHost(
+        options.fileSignatures,
+        verifiedHost.fileSignatures,
+      ),
       firmwareInspection: outsideVerifiedHost(
         options.firmwareAnalysis,
         verifiedHost.firmware,
@@ -335,6 +357,9 @@ const installSessionToolAvailability = (
       wasmArtifactEnabled:
         options.wasmArtifact !== undefined ||
         isAbsolute(environment.REA_WABT_BIN_DIRECTORY ?? ""),
+      liefInspectionEnabled:
+        options.liefInspection !== undefined ||
+        (verifiedHost.lief && isAbsolute(environment.REA_LIEF_PYTHON ?? "")),
       evmInterfaceEnabled:
         options.evmInterface !== undefined || verifiedHost.evmInterface,
       webModuleResolutionEnabled:
@@ -342,6 +367,12 @@ const installSessionToolAvailability = (
         isAbsolute(environment.REA_BROWSER_EXECUTABLE ?? ""),
       recordedCrashEnabled: options.recordedCrash !== undefined || pwntools,
       binaryLayoutEnabled: options.binaryLayout !== undefined || pwntools,
+      // diec is unverified: REA_DIE_COMMAND wins selection and is refused.
+      fileSignaturesEnabled:
+        options.fileSignatures !== undefined ||
+        (verifiedHost.fileSignatures &&
+          (environment.REA_DIE_COMMAND ?? "") === "" &&
+          isAbsolute(environment.REA_DIE_PYTHON ?? "")),
       firmwareInspectionEnabled:
         options.firmwareAnalysis !== undefined ||
         (verifiedHost.firmware &&
@@ -461,6 +492,8 @@ export const createServer = (
   const peResources = createPeResourcesService();
   const nativeExports = createNativeExportsService();
   const elfNotes = createElfNotesService();
+  const fileSignatures =
+    options.fileSignatures ?? createFileSignaturesService(environment);
   const peCertificates = createPeCertificatesService();
   const electronFuses = options.electronFuses ?? createElectronFuseService();
   const pythonPyc = options.pythonPyc ?? createPythonPycService();
@@ -523,6 +556,10 @@ export const createServer = (
     environment,
     options.wasmArtifact,
   );
+  const liefInspection = liefInspectionModule.create(
+    environment,
+    options.liefInspection,
+  );
   const apkSignature = apkSignatureModule.create(
     environment,
     options.apkSignature,
@@ -548,6 +585,7 @@ export const createServer = (
       cutter.close(),
       fridaInstrumentation.closeAll(),
       wasmArtifact.close(),
+      liefInspection.close(),
       apkSignature.close(),
       packetCapture.close(),
       signalRecording.close(),
@@ -572,6 +610,7 @@ export const createServer = (
       peResources.close(),
       nativeExports.close(),
       elfNotes.close(),
+      fileSignatures.close(),
       peCertificates.close(),
       electronFuses.close(),
       pythonPyc.close(),
@@ -640,6 +679,7 @@ export const createServer = (
     peResources,
     nativeExports,
     elfNotes,
+    fileSignatures,
     peCertificates,
     electronFuses,
     pythonPyc,
@@ -764,6 +804,13 @@ export const createServer = (
     recordEvidence,
     analysisAdmission,
   );
+  registerLiefTools(
+    server,
+    liefInspection,
+    toolLogger,
+    recordEvidence,
+    analysisAdmission,
+  );
   registerConfiguredAnalysisTools(
     toolContext,
     android,
@@ -877,6 +924,7 @@ const registerConfiguredAnalysisTools = (
     peResources,
     nativeExports,
     elfNotes,
+    fileSignatures,
     peCertificates,
     pythonPyc,
     webNetworkCapture,
@@ -939,6 +987,13 @@ const registerConfiguredAnalysisTools = (
   registerElfNotesTool(
     server,
     elfNotes,
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
+  );
+  registerFileSignaturesTool(
+    server,
+    fileSignatures,
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
@@ -1104,6 +1159,7 @@ interface ServerToolContext extends ReturnType<typeof createSessionRecorders> {
   readonly peResources: PeResourcesService;
   readonly nativeExports: NativeExportsService;
   readonly elfNotes: ElfNotesService;
+  readonly fileSignatures: FileSignaturesService;
   readonly peCertificates: PeCertificatesService;
   readonly electronFuses: ElectronFuseService;
   readonly pythonPyc: PythonPycService;

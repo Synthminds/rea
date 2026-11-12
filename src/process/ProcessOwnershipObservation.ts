@@ -1045,6 +1045,9 @@ export const createSystemProcessOwnershipHost = (
                 ...(environmentRestriction === undefined
                   ? {}
                   : { environmentRestriction }),
+                ...(facts.kernelThread === true
+                  ? { kernelThread: true as const }
+                  : {}),
                 lifecycle:
                   facts.lifecycle === undefined
                     ? {

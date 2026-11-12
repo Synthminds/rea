@@ -177,6 +177,30 @@ The workflow reports note owners, types, descriptor hashes, and GNU build-id
 or ABI-tag fields when those descriptors match. A missing note table is
 observed absence of those declarations. See [ELF note tables](elf-notes.md).
 
+Inspect ELF, PE or Mach-O structure with a caller-supplied LIEF installation
+selected by `REA_LIEF_PYTHON`, without executing the file:
+
+```bash
+rea inspect-with-lief /absolute/path/to/program --json
+rea inspect-with-lief /absolute/path/to/library.dll exports --limit 200 --json
+```
+
+`summary` is the default operation; `sections`, `segments`, `imports`,
+`exports`, `libraries`, `rpaths` and `load_commands` return pages of 64 rows
+by default with `next_offset`. `--diagnostics complete` adds LIEF's full
+warning text. See [executable structure with LIEF](lief.md).
+
+Identify a file's type and compiler, linker, library or packer signatures with
+caller-supplied Detect It Easy, without executing or unpacking it:
+
+```bash
+REA_DIE_PYTHON=/absolute/die-env/bin/python \
+  rea detect-file-signatures /absolute/path/to/application.exe --json
+```
+
+Detections are DiE signature leads, not proof. See
+[Detect It Easy file signatures](file-signatures.md).
+
 Inspect a CPython 3.7–3.13 `.pyc` header and nested marshal code objects
 without executing bytecode or installing Python:
 

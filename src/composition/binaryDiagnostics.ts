@@ -13,8 +13,11 @@ import { ElfNotesProvider } from "../native/elf/ElfNotesProvider.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { NativeExportsService } from "../application/binaryDiagnostics/NativeExportsService.js";
 import { NativeExportsProvider } from "../native/exports/NativeExportsProvider.js";
+import { FileSignaturesService } from "../application/binaryDiagnostics/FileSignaturesService.js";
+import { DieSignatureProvider } from "../native/die/DieSignatureProvider.js";
+import { dieHostSupported } from "../native/die/DieRelease.js";
 
-export { pwntoolsHostSupported };
+export { pwntoolsHostSupported, dieHostSupported };
 
 /** Portable PE inspection with no engine, installation or target acquisition. */
 export const createPeResourcesService = (): PeResourcesService =>
@@ -42,6 +45,12 @@ export const createRecordedCrashService = (
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
 ): RecordedCrashService =>
   new RecordedCrashService(new PwntoolsRecordedCrashProvider(environment));
+
+/** Compose caller-supplied Detect It Easy without import-time I/O or installation. */
+export const createFileSignaturesService = (
+  environment: Readonly<NodeJS.ProcessEnv> = process.env,
+): FileSignaturesService =>
+  new FileSignaturesService(new DieSignatureProvider(environment));
 
 /** Provider-free local byte analysis. */
 export const createByteEntropyService = (

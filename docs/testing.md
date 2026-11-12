@@ -376,7 +376,10 @@ a group that reappears after it was processed is revalidated once, a further
 reappearance stays unresolved, lineage publishes one row per PID, and lineage does not publish a
 verified empty descendant list while that row remains unexamined. A readable token with unavailable
 identity stays unresolved. Native UID facts, rather than an earlier process-table
-row, determine whether a token denial concerns another user. Darwin tests compile
+row, determine whether a token denial concerns another user. A kernel thread
+created after the launch baseline is skipped only when both native reads around
+its token read report PF_KTHREAD for the same generation; Linux refuses its
+environment with ESRCH, and a one-sided report stays unresolved. Darwin tests compile
 the helper and exercise snapshot growth, absence, lifecycle, and UID observations;
 controlled Linux procfs tests do not establish real Linux exit or PID-reuse behavior.
 
@@ -1770,6 +1773,84 @@ the ordinary lane. Its large MCP transfer is opt-in with
 explicit 256 MiB SDK receive buffer, matching server `REA_MCP_MAX_RESPONSE_BYTES`,
 and five-minute request timeout. Ordinary
 MCP fixtures retain the pinned SDK defaults.
+
+### Offline LIEF structure
+
+`npm run verify:lief` requires Linux x64, `cc`, binutils `readelf` and an
+absolute `REA_LIEF_PYTHON` whose Python imports LIEF 1.0.x. REA installs
+nothing. When `clang` with `lld` and `llvm-lipo` are available, the lane also
+builds PE and universal Mach-O fixtures; otherwise it reports those formats as
+unverified. It compiles source-owned ELF executables and shared libraries
+(with `RUNPATH` and legacy `RPATH`), a PE DLL with normal, delay-loaded and
+forwarded links, and an arm64 dylib with a universal executable in private
+storage. A known rich header is written into one DLL's DOS stub. Copies of the
+compiled ELF and DLL get one byte of the interpreter, a `DT_NEEDED` name, a
+dynamic symbol name or a section name replaced with 0xff, and a generated
+ELF holds 200,000 `.dynsym` exports. It checks summaries, dependency names,
+runpath, rpath and soname, `.dynsym` imports and exports with exact counts
+and names against `readelf --dyn-syms`, the `libraries`, `rpaths` and
+`load_commands` pages, non-UTF-8 strings as exact bytes, the inline
+diagnostics summary against `--diagnostics complete`, the interpreter and
+native-module digests, PE imports, delay imports, exports, forwarders, data
+directories and the rich header, Mach-O slices, `LC_ID_DYLIB`, bound imports
+and the `LC_CODE_SIGNATURE` location, list paging, unsupported and
+out-of-range input, identical CLI/MCP Evidence IDs over stdio, unchanged
+fixture bytes, and an empty private temporary directory after the run. No
+fixture is executed. A signed PE is not part of the lane. Pass an installed
+package's `scripts/rea.mjs` as the first argument to verify a package.
+
+Source-owned boundary tests replace the interpreter with a controlled producer
+through the real owned process. They cover every helper refusal and a bounded
+refusal message, a modified private copy, an interpreter or native module
+that changes during the run, a selected file replaced or swapped for a
+symlink between its digest and the copy, a selected file that changes after
+the copy, deadlines, signals, a nonzero exit, exit 0 without a reply,
+oversized, symlinked and malformed replies, diagnostics past the 4 MiB budget,
+the inline diagnostics summary, cancellation during the selected-file digest,
+while staging, while the helper runs, during result reads and during
+private-copy removal, failed removal and failed process-group cleanup after
+success and after a primary failure with retry, a failed descriptor close
+after each completed post-run read (alone and two at once, followed by a
+failed integrity check or by cancellation, and with an abort inside that
+close) with release by `close()` and by the next call, a `setsid` descendant
+swept by run token, and configuration errors. `bridge/lief/test_inspect.py`
+covers the helper's string decoding, `.dynsym` predicates, lazy paging,
+summary list bounds and reply encoding under `MemoryError` with controlled
+objects; it does not establish real LIEF behavior.
+
+### Detect It Easy signatures
+
+On Linux x64, set `REA_VERIFY_DIE_PYTHON` to an absolute Python executable with
+die-python 0.5.0 and util-linux `prlimit` at `/usr/bin/prlimit`, then run
+`npm run test:focused -- tests/boundary/providers/dieSignatures.test.ts`. The
+real cases identify a host ELF and a generated PE image with a ZIP overlay
+through the provider, check snapshot release, recursive file parts and the
+recorded limiter and native module, and exercise a real command deadline and a
+Python without die-python. Without the variable they skip by name;
+configuration, `REA_DIE_COMMAND` refusal and file-admission controls still run.
+
+`tests/boundary/providers/dieSignatureLifecycle.test.ts` runs everywhere on
+Linux x64 with `/usr/bin/prlimit`. Authored bash stand-ins run under the real
+limiter and owned process supervision: output overflow with a bounded excerpt,
+a real `SIGXFSZ` from file growth, a real CPU-ceiling stop (Linux sends
+`SIGKILL` at equal soft and hard CPU limits), an authored `SIGXCPU`, nonzero
+exit, a malformed bridge reply, snapshot truncation, executable, limiter and
+native-module replacement through the launcher seam, `/proc/self/limits` read
+failure, a `setsid` descendant swept by run token, cancellation during the scan
+and during runtime-root removal, and root-removal failure with retry through
+`close()`. A `node:fs/promises` open seam targets REA's reads after the scan
+exits (private snapshot, executable, limiter, native module and selected file):
+cancellation during each read returns typed cancellation with closed
+descriptors and DiE's parsed detections as partial observation, naming the
+integrity reads not yet confirmed and leaving `artifact_after` unknown; after a
+malformed bridge reply it keeps that output error instead. A failed close after
+a completed read returns the completed observation as `cleanup_incomplete` and
+keeps that descriptor, and any runtime containing it, until `close()` releases
+them. An abort inside that failed close keeps typed cancellation primary with
+the same partial, or after an invalid document its output error, and the
+descriptor until `close()`. No real `diec` lane exists yet; `diec` is refused
+at selection, and its version gate, nonzero-exit mapping and output framing are
+exercised only through a source-owned backend seam with authored stand-ins.
 
 ### Offline EVM interface
 

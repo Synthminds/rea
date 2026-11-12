@@ -59,9 +59,11 @@ export const HOST_RESTRICTED_FEATURES = [
   "evmInterface",
   "binaryLayout",
   "recordedCrash",
+  "liefInspection",
   "firmwareInspection",
   "firmwareExtraction",
   "javascriptRecovery",
+  "fileSignatures",
 ] as const;
 export type HostRestrictedFeature = (typeof HOST_RESTRICTED_FEATURES)[number];
 
@@ -73,12 +75,14 @@ export type AvailabilityPolicy = {
   readonly packetCaptureEnabled?: boolean;
   readonly signalRecordingEnabled?: boolean;
   readonly wasmArtifactEnabled?: boolean;
+  readonly liefInspectionEnabled?: boolean;
   readonly evmInterfaceEnabled?: boolean;
   /** Fresh owner observation of the selected required EVM limiter. */
   readonly evmLimiterAvailability?: ProviderAvailability;
   readonly processCaptureEnabled: boolean;
   readonly optionalProviderLoadFailures?: OptionalProviderLoadFailures;
   readonly binaryLayoutEnabled?: boolean;
+  readonly fileSignaturesEnabled?: boolean;
   readonly recordedCrashEnabled?: boolean;
   readonly firmwareInspectionEnabled?: boolean;
   readonly firmwareExtractionEnabled?: boolean;
@@ -492,6 +496,13 @@ const workflowAvailabilityFor = ({
       policy.binaryLayoutEnabled,
       "On Linux x64, set absolute REA_PWNTOOLS_PYTHON to caller-supplied Python with pwntools 4.15.0. No active binary target is required.",
     );
+  if (name === "detect_file_signatures")
+    return hostRestrictedAvailability(
+      policy,
+      "fileSignatures",
+      policy.fileSignaturesEnabled,
+      "On Linux x64, set absolute REA_DIE_PYTHON to caller-supplied Python with die-python 0.5.0, plus util-linux prlimit (REA_DIE_PRLIMIT_COMMAND, default /usr/bin/prlimit), and leave REA_DIE_COMMAND unset: diec is not admitted until a real diec lane verifies it. No active binary target is required; the tool is checked at execution.",
+    );
   if (name === "inspect_packet_capture" || name === "inspect_packet_fields")
     return hostRestrictedAvailability(
       policy,
@@ -514,6 +525,13 @@ const workflowAvailabilityFor = ({
           remediation:
             "Supply WABT 1.0.42 via absolute REA_WABT_BIN_DIRECTORY. No active binary target is required; tools are checked at execution.",
         };
+  if (name === "inspect_with_lief")
+    return hostRestrictedAvailability(
+      policy,
+      "liefInspection",
+      policy.liefInspectionEnabled,
+      "On Linux x64, set absolute REA_LIEF_PYTHON to caller-supplied Python that can import LIEF 1.0.x (verified with 1.0.0). REA never installs Python or LIEF. No active binary target is required.",
+    );
   if (name === "inspect_pe_resources" || name === "inspect_native_exports")
     return { reason: "available", remediation: null };
   if (name === "inspect_pe_certificates")

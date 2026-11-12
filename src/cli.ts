@@ -3,6 +3,7 @@ import { registerNativeFunctionMatchingCommands } from "./cli/nativeFunctionMatc
 import { registerCaptureCommands } from "./cli/captureCommands.js";
 import { registerSignalCommands } from "./cli/signalCommands.js";
 import { registerWasmCommands } from "./cli/wasmCommands.js";
+import { registerLiefCommands } from "./cli/liefCommands.js";
 import { registerApkSignatureCommands } from "./cli/apkSignatureCommands.js";
 import { snapshotEnvironment } from "./process/snapshotEnvironment.js";
 import { createDirectAnalysis } from "./composition/directAnalysis.js";
@@ -17,6 +18,7 @@ import { registerErlangCommands } from "./cli/erlangCommands.js";
 import { registerSqliteCommands } from "./cli/sqliteCommands.js";
 import { registerAnalysisViewCommands } from "./cli/analysisViewCommands.js";
 import { registerBinaryDiagnosticsCommands } from "./cli/binaryDiagnosticsCommands.js";
+import { registerFileSignatureCommands } from "./cli/fileSignatureCommands.js";
 import { registerFridaCommands } from "./cli/fridaCommands.js";
 import type { FridaInstrumentationPort } from "./application/frida/FridaInstrumentationPort.js";
 import { Cli } from "incur";
@@ -133,6 +135,7 @@ export const createCli = (
   );
   registerUtilityCommands(cli, logger, environment, analysis);
   registerWasmCommands(cli, logger, environment);
+  registerLiefCommands(cli, logger, environment);
   registerApkSignatureCommands(cli, logger, environment);
   registerCaptureCommands(cli, logger, environment);
   registerSignalCommands(cli, logger, environment);
@@ -156,6 +159,7 @@ export const createCli = (
   registerAdbCommands(cli, logger, environment);
   registerFirmwareCommands(cli, logger, environment);
   registerBinaryDiagnosticsCommands(cli, logger, environment);
+  registerFileSignatureCommands(cli, logger, environment);
   registerAnalysisViewCommands(cli, logger);
   registerNativeFunctionMatchingCommands(cli, logger);
   registerFridaCommands(cli, logger, fridaInstrumentation);

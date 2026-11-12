@@ -1,12 +1,12 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues on `Synthminds/rea`. Use the `gh` CLI where its GraphQL API answers. In Claude Code cloud sessions `gh` is installed, but `gh issue`, `gh pr` and `gh label` fail with `HTTP 403: GitHub GraphQL is not available`; `gh api` REST calls still work. There, use the [GitHub MCP equivalents](#github-mcp-equivalents) below.
+Issues and specs for this repo live as GitHub issues on `Synthminds/rea`. Use the `gh` CLI where its GraphQL API answers. If a host returns `HTTP 403: GitHub GraphQL is not available` for `gh issue`, `gh pr` or `gh label`, use `gh api` REST calls or the [GitHub MCP equivalents](#github-mcp-equivalents) below.
 
-## Status: Issues are disabled
+## Status: Issues are enabled
 
-Issues are currently disabled on the `Synthminds/rea` fork. The owner must enable them (repository **Settings → General → Features → Issues**). Until then, file nothing: create no issue, comment or label. A skill that would publish to the tracker returns its draft to the user instead.
+GitHub repository metadata reports `has_issues: true` on `Synthminds/rea`; issues [#6](https://github.com/Synthminds/rea/issues/6) and [#7](https://github.com/Synthminds/rea/issues/7) are open. This was checked on 2026-11-12 UTC. Recheck live metadata before relying on this snapshot. Enabled Issues do not grant publication authority: follow the user's requested scope before creating issues, comments or labels. Return a draft when publication is not authorized.
 
-Of the labels in `docs/agents/triage-labels.md`, the fork has only GitHub's defaults `bug`, `enhancement` and `wontfix`. Create `needs-triage`, `needs-info`, `ready-for-agent` and `ready-for-human` before their first use (**Create a missing label** below).
+Of the roles in `docs/agents/triage-labels.md`, only `bug`, `enhancement` and `wontfix` have existing labels. `needs-triage`, `needs-info`, `ready-for-agent` and `ready-for-human` are not configured. Do not pass them as existing labels or invent substitute mappings; settle the intended mapping before creating a missing label.
 
 The inherited issue forms in `.github/ISSUE_TEMPLATE/` apply `bug`, `enhancement` or `documentation` plus `triage`, and their links point at the upstream `morluto/rea`. `triage` is not one of the triage labels, and the fork has no such label.
 
@@ -18,7 +18,7 @@ The inherited issue forms in `.github/ISSUE_TEMPLATE/` apply `bug`, `enhancement
 - **List children**: the open issues whose `## Parent` section names `<number>`, each with its count of open blockers: `gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' --paginate --jq '.[] | select(.body // "" | test("## Parent\\s+#<number>\\b")) | "\(.number) blocked_by=\(.issue_dependencies_summary.blocked_by) \(.title)"'`, plus any sub-issues (`gh api repos/{owner}/{repo}/issues/<number>/sub_issues --paginate --jq '.[] | select(.state == "open") | "\(.number) blocked_by=\(.issue_dependencies_summary.blocked_by) \(.title)"'`).
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "<name>"` or `--remove-label "<name>"`
-- **Create a missing label**: `--label` / `--add-label` fails on a label the repo doesn't have yet. Create it first with `gh label create "<name>" --force`.
+- **Create a missing label**: `--label` / `--add-label` fails on a label the repo does not have. Check the current inventory with `gh label list --json name,description`. If label creation is authorized and the mapping is settled, create it first with `gh label create "<name>"`. Do not overwrite an existing label merely to make a workflow fit.
 - **Close**: `gh issue close <number> --comment "..."`
 
 This clone's `origin` is `Synthminds/rea`, a fork of `morluto/rea`. Run every `gh` command with `GH_REPO=Synthminds/rea`, which also fills `{owner}/{repo}` in `gh api` paths, so nothing lands on the upstream. `<owner>/<repo>` below means `Synthminds/rea`. Never file on `morluto/rea` from here: upstream reports follow "Reporting issues" in `CONTRIBUTING.md` and need the owner's request.
@@ -37,7 +37,7 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue once Issues are enabled. Until then, file nothing and return the draft to the user.
+Create a GitHub issue on `Synthminds/rea` when the user has authorized publication. Use the appropriate issue form and existing labels. If publication is outside the requested scope or a required label mapping is unresolved, return the draft and the specific missing decision.
 
 ## When a skill says "fetch the issue"
 
@@ -45,7 +45,7 @@ Run the **Read an issue** command above.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`; `/to-tickets` uses **Blocking** too. The **map** is a single issue with **child** issues as tickets.
+Used by `/wayfinder`; `/to-tickets` uses **Blocking** too. The **map** is a single issue with **child** issues as tickets. The `wayfinder:*` labels in these examples do not currently exist on the fork. Resolve their mapping or authorize their creation before using a label-dependent command.
 
 - **Map**: a single issue labelled `wayfinder:map`, holding the Destination / Notes / Decisions so far / Added so far / Not yet specified / Out of scope body. `gh issue create --label wayfinder:map`.
 - **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
@@ -56,7 +56,7 @@ Used by `/wayfinder`; `/to-tickets` uses **Blocking** too. The **map** is a sing
 
 ## GitHub MCP equivalents
 
-Where `gh` GraphQL returns 403 (Claude Code cloud sessions), use these GitHub MCP tools instead, always with `owner: "Synthminds"` and `repo: "rea"`. They obey the same status rule: while Issues are disabled, make no write.
+Where `gh` GraphQL returns 403 (Claude Code cloud sessions), use these GitHub MCP tools instead, always with `owner: "Synthminds"` and `repo: "rea"`. Tool names vary by host; use the available equivalent for each operation. The same repository targeting, publication authority and existing-label requirements apply.
 
 | Operation              | GitHub MCP call                                                                                                                                                                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

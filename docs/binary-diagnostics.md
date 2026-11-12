@@ -147,6 +147,14 @@ received signal alone does not establish its exact cause. Dynamic tags require
 a complete DT_NULL inside PT_DYNAMIC; interpreter names and ranges end at the
 first NUL, with any padding still represented by the original segment range.
 
+## Executable structure with LIEF
+
+`inspect_with_lief` / `inspect-with-lief` summarizes ELF, PE or Mach-O
+structure and pages sections, segments, imports and exports through a
+caller-supplied LIEF 1.0.x selected by `REA_LIEF_PYTHON`. It reads a private
+read-only copy of the selected bytes. See
+[executable structure with LIEF](lief.md).
+
 ## Ghidra process failures
 
 When output from the failing Ghidra startup or operation reports

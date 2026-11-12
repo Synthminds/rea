@@ -16,6 +16,7 @@ export interface SessionAvailabilityDefaults {
     | "packetCaptureEnabled"
     | "signalRecordingEnabled"
     | "wasmArtifactEnabled"
+    | "liefInspectionEnabled"
     | "evmInterfaceEnabled"
     | "browserObservationEnabled"
     | "browserScenarioEnabled"
@@ -25,6 +26,7 @@ export interface SessionAvailabilityDefaults {
     | "javascriptRecoveryEnabled"
     | "webModuleResolutionEnabled"
     | "binaryLayoutEnabled"
+    | "fileSignaturesEnabled"
     | "recordedCrashEnabled"
     | "firmwareInspectionEnabled"
     | "firmwareExtractionEnabled"
@@ -57,6 +59,8 @@ export const sessionAvailabilityPolicy = (
         defaults.optionalFeatures?.signalRecordingEnabled ?? false,
       wasmArtifactEnabled:
         defaults.optionalFeatures?.wasmArtifactEnabled ?? false,
+      liefInspectionEnabled:
+        defaults.optionalFeatures?.liefInspectionEnabled ?? false,
       evmInterfaceEnabled:
         defaults.optionalFeatures?.evmInterfaceEnabled ?? false,
       processCaptureEnabled: platform !== "win32",
@@ -64,6 +68,8 @@ export const sessionAvailabilityPolicy = (
         defaults.optionalFeatures?.recordedCrashEnabled ?? false,
       binaryLayoutEnabled:
         defaults.optionalFeatures?.binaryLayoutEnabled ?? false,
+      fileSignaturesEnabled:
+        defaults.optionalFeatures?.fileSignaturesEnabled ?? false,
       firmwareInspectionEnabled:
         defaults.optionalFeatures?.firmwareInspectionEnabled ?? false,
       firmwareExtractionEnabled:

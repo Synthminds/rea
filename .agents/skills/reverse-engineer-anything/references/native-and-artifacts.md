@@ -121,6 +121,37 @@ absence of those declarations, not proof the image never carried notes in
 another container. See
 [ELF note tables](https://github.com/morluto/rea/blob/main/docs/elf-notes.md).
 
+## Executable structure with LIEF
+
+Use `inspect_with_lief` for an explicit local ELF, PE or Mach-O file when the
+question concerns its overall structure: format, architecture, entry point,
+sections and segments with flags, imports and exports, dependency libraries,
+PE data directories, rich header and signature presence, or Mach-O load
+commands, code-signature location and slices. It requires a caller-supplied
+Python with LIEF 1.0.x selected by `REA_LIEF_PYTHON`; REA never installs it.
+No `open_binary` or target execution is required. The CLI equivalent is
+`inspect-with-lief PATH [OPERATION]`. Start with `summary`; page list
+operations with `offset`/`limit` and continue from `next_offset`, comparing
+`artifact.sha256` across pages. Treat `coverage.parser_diagnostics: reported`
+as possible omissions. Use `inspect_pe_certificates` or `inspect_signature` when
+signature contents matter. See
+[executable structure with LIEF](https://github.com/morluto/rea/blob/main/docs/lief.md).
+
+## Detect It Easy file signatures
+
+Use `detect_file_signatures` for an explicit local file when the question is
+what file type, compiler, linker, library, packer or protector Detect It Easy
+recognizes. It needs caller-supplied die-python 0.5.0 (`REA_DIE_PYTHON`) and
+util-linux `prlimit` on Linux x64, with `REA_DIE_COMMAND` unset (diec is refused
+as unverified); no `open_binary` or target execution is required. The CLI equivalent is
+`detect-file-signatures PATH`. Request `heuristic_scan`, `recursive_scan` or
+`deep_scan` only when the question needs them; unrequested scans leave their
+detections unknown. Preserve the artifact SHA-256, file-part nesting, DiE's
+heuristic marker and the tool profile. Present detections as leads, not proof,
+and do not turn a packer or protector detection into unpacking or bypass advice.
+See
+[Detect It Easy file signatures](https://github.com/morluto/rea/blob/main/docs/file-signatures.md).
+
 ## CPython pyc files
 
 Use `inspect_python_pyc` for an explicit local CPython 3.7–3.13 `.pyc` when the

@@ -115,11 +115,11 @@ human review occurred, maintainer scope approval, or merge permission.
 
 ### Issue tracker
 
-GitHub Issues on the `Synthminds/rea` fork; they are disabled, so file nothing until the owner enables them. See `docs/agents/issue-tracker.md`.
+GitHub Issues are enabled on the `Synthminds/rea` fork. Follow `docs/agents/issue-tracker.md` for repository targeting, publication authority and current labels.
 
 ### Triage labels
 
-The seven default labels, each named after its role. See `docs/agents/triage-labels.md`.
+Canonical triage roles map to existing repository labels where configured; four state roles are not configured. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 

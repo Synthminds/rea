@@ -56,6 +56,8 @@ const SOURCE_PATHS = {
   fridaContracts: "dist/contracts/fridaToolContracts.js",
   fridaProvider: "dist/frida/FridaInstrumentationManager.js",
   pwntoolsProvider: "dist/native/pwntools/PwntoolsRelease.js",
+  fileSignatureContracts: "dist/contracts/native/fileSignatureToolContracts.js",
+  dieProvider: "dist/native/die/DieRelease.js",
   nativeContracts: "dist/contracts/native/nativeToolContracts.js",
   captureContracts: "dist/contracts/captures/captureToolContracts.js",
   captureProvider: "dist/captures/TsharkCaptureProvider.js",
@@ -63,6 +65,8 @@ const SOURCE_PATHS = {
   signalProvider: "dist/signals/SigrokRecordingProvider.js",
   wasmContracts: "dist/contracts/wasm/wasmToolContracts.js",
   wasmProvider: "dist/wasm/WabtRelease.js",
+  liefContracts: "dist/contracts/lief/liefToolContracts.js",
+  liefProvider: "dist/lief/LiefRelease.js",
   apkSignatureContracts:
     "dist/contracts/apkSignature/apkSignatureToolContracts.js",
   apkSignatureProvider: "dist/apkSignature/ApkSignatureRelease.js",

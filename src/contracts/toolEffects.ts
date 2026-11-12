@@ -164,6 +164,11 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     writesFilesystem: true,
     launchesProcess: true,
   }),
+  inspect_with_lief: effects({
+    mutatesSession: true,
+    writesFilesystem: true,
+    launchesProcess: true,
+  }),
   inspect_evm_interface: effects({
     mutatesSession: true,
     writesFilesystem: true,
@@ -259,6 +264,11 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
   inspect_pe_certificates: evidence,
   inspect_native_exports: evidence,
   inspect_elf_notes: evidence,
+  detect_file_signatures: effects({
+    mutatesSession: true,
+    writesFilesystem: true,
+    launchesProcess: true,
+  }),
   inspect_analysis_view: evidence,
   inspect_firmware_regions: effects({
     mutatesSession: true,

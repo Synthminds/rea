@@ -247,12 +247,27 @@ explicit path or endpoint and do not need it.
   absence of that table, not proof the image is unsigned in every catalog sense.
   Signatures are not verified. See the
   [PE certificate guide](https://github.com/morluto/rea/blob/main/docs/pe-certificates.md).
+- ELF, PE or Mach-O structure: `inspect_with_lief` with the explicit local
+  file, after `REA_LIEF_PYTHON` selects a caller-supplied Python with LIEF 1.0.x.
+  Start with `summary`, then page `sections`, `segments`, `imports` or
+  `exports` with `offset`/`limit` and `next_offset`; select a universal slice
+  with `macho_slice`. Preserve artifact SHA-256 and `parser_diagnostics`. Signatures are
+  located, not verified, and ELF imports have no per-library binding. See the
+  [LIEF guide](https://github.com/morluto/rea/blob/main/docs/lief.md).
 - ELF note tables: `inspect_elf_notes` with the explicit local ELF32/ELF64
   file. This built-in target-free inspection requires no disassembler. Preserve
   PT_NOTE and SHT_NOTE ranges, owners, types, descriptor SHA-256, and GNU
   build-id or ABI-tag fields. A missing table is observed absence of those
   declarations, not proof the image never carried notes. See the
   [ELF notes guide](https://github.com/morluto/rea/blob/main/docs/elf-notes.md).
+- File type, compiler, linker, library and packer/protector signature leads:
+  `detect_file_signatures` with the explicit local file and caller-supplied
+  Detect It Easy through `REA_DIE_PYTHON` (die-python 0.5.0) on Linux x64;
+  `REA_DIE_COMMAND` (diec) is refused as unverified. Report detections as DiE's leads with its
+  heuristic marker, never as proof of a component or of maliciousness or safety;
+  a missing detection proves nothing. It detects protections only: do not
+  propose unpacking or bypass steps. See the
+  [file signatures guide](https://github.com/morluto/rea/blob/main/docs/file-signatures.md).
 - CPython 3.7–3.13 `.pyc` header, nested marshal code objects and bytecode
   identity: `inspect_python_pyc` with the explicit local file. This built-in
   target-free inspection requires no Python installation. Preserve magic,
